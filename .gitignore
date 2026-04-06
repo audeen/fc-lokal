@@ -2,3 +2,5 @@ __pycache__/
 *.py[cod]
 config/
 *.tmp
+.venv/
+service/fc_lokal_api/data/config.yaml

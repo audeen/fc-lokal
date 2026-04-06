@@ -19,6 +19,7 @@ This repository is prepared for HACS:
 custom_components/fc_lokal/
 hacs.json
 README.md
+service/fc_lokal_api/
 ```
 
 ## Install with HACS
@@ -70,3 +71,15 @@ Optional forwarded query parameters:
 
 Because this fork uses `domain: fc_lokal`, it can coexist with the built-in `forecast_solar`
 integration. That lets you keep the original integration installed while testing this fork.
+
+## Proxmox service
+
+The repository also contains a separate Proxmox-side forecast service scaffold under
+`service/fc_lokal_api/`.
+
+It provides:
+
+- `GET /estimate` for the Home Assistant custom integration
+- Open-Meteo weather forecasts
+- a prepared PVGIS client
+- Home Assistant live-value correction via REST API

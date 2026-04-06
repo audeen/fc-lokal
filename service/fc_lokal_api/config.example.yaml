@@ -1,0 +1,45 @@
+site:
+  latitude: 52.5200
+  longitude: 13.4050
+  timezone: Europe/Berlin
+  planes:
+    - name: main_roof
+      declination: 25
+      azimuth: 180
+      kwp: 1.6
+      inverter_watts: 1200
+
+home_assistant:
+  base_url: http://homeassistant.local:8123
+  token: "PASTE_LONG_LIVED_ACCESS_TOKEN_HERE"
+  verify_ssl: true
+  timeout_seconds: 10
+  sensors:
+    pv_power_entity_id: sensor.solakon_one_active_power
+    pv_energy_today_entity_id: sensor.solakon_one_daily_generation
+    inverter_power_entity_id: sensor.solakon_one_active_power
+    grid_power_entity_id: sensor.shellypro3em_ac15187c6ea4_total_active_power
+    battery_power_entity_id: sensor.solakon_one_battery_combined_power
+
+open_meteo:
+  base_url: https://api.open-meteo.com/v1/forecast
+  forecast_days: 3
+  model: best_match
+  timeout_seconds: 15
+
+pvgis:
+  base_url: https://re.jrc.ec.europa.eu/api/v5_3/PVcalc
+  enabled: true
+  loss_percent: 14
+  pvtechchoice: crystSi
+  mountingplace: free
+  usehorizon: true
+  timeout_seconds: 30
+
+engine:
+  min_scale: 0.25
+  max_scale: 1.6
+  live_power_weight: 0.55
+  daily_energy_weight: 0.45
+  low_light_threshold_wm2: 10
+  temperature_coefficient_per_c: 0.004

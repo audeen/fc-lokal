@@ -1,0 +1,11 @@
+services:
+  fc-lokal-api:
+    build: .
+    container_name: fc-lokal-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      FC_LOKAL_CONFIG: /data/config.yaml
+    volumes:
+      - ./data:/data
