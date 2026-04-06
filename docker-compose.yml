@@ -1,0 +1,17 @@
+# Run from repository root: docker compose up --build
+# Dockerfile lives in service/fc_lokal_api/; config: service/fc_lokal_api/data/config.yaml
+services:
+  fc-lokal-api:
+    build:
+      context: ./service/fc_lokal_api
+      dockerfile: Dockerfile
+    container_name: fc-lokal-api
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
+    ports:
+      - "8000:8000"
+    environment:
+      FC_LOKAL_CONFIG: /data/config.yaml
+    volumes:
+      - ./service/fc_lokal_api/data:/data
