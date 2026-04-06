@@ -23,6 +23,15 @@ class HomeAssistantSensors:
 
 
 @dataclass(slots=True)
+class HomeAssistantInterpretation:
+    """How the configured HA sensors should be interpreted."""
+
+    battery_power_sign: str = "negative_is_charging"
+    grid_power_sign: str = "positive_is_import"
+    battery_charging_from_grid_possible: bool = False
+
+
+@dataclass(slots=True)
 class HomeAssistantConfig:
     """Home Assistant connectivity configuration."""
 
@@ -31,6 +40,9 @@ class HomeAssistantConfig:
     verify_ssl: bool = True
     timeout_seconds: int = 10
     sensors: HomeAssistantSensors = field(default_factory=HomeAssistantSensors)
+    interpretation: HomeAssistantInterpretation = field(
+        default_factory=HomeAssistantInterpretation
+    )
 
     @property
     def enabled(self) -> bool:
@@ -100,10 +112,16 @@ def load_config(path: str | Path) -> AppConfig:
         longitude=float(site_raw["longitude"]),
         timezone=str(site_raw.get("timezone", "Europe/Berlin")),
         planes=planes,
+        grid_output_limit_watts=_float_or_none(site_raw.get("grid_output_limit_watts")),
+        battery_charge_limit_watts=_float_or_none(
+            site_raw.get("battery_charge_limit_watts")
+        ),
+        system_total_limit_watts=_float_or_none(site_raw.get("system_total_limit_watts")),
     )
 
     ha_raw = raw.get("home_assistant", {})
     sensors_raw = ha_raw.get("sensors", {})
+    interpretation_raw = ha_raw.get("interpretation", {})
     home_assistant = HomeAssistantConfig(
         base_url=_strip_or_none(ha_raw.get("base_url")),
         token=_strip_or_none(ha_raw.get("token")),
@@ -120,6 +138,17 @@ def load_config(path: str | Path) -> AppConfig:
             grid_power_entity_id=_strip_or_none(sensors_raw.get("grid_power_entity_id")),
             battery_power_entity_id=_strip_or_none(
                 sensors_raw.get("battery_power_entity_id")
+            ),
+        ),
+        interpretation=HomeAssistantInterpretation(
+            battery_power_sign=str(
+                interpretation_raw.get("battery_power_sign", "negative_is_charging")
+            ),
+            grid_power_sign=str(
+                interpretation_raw.get("grid_power_sign", "positive_is_import")
+            ),
+            battery_charging_from_grid_possible=bool(
+                interpretation_raw.get("battery_charging_from_grid_possible", False)
             ),
         ),
     )
@@ -180,3 +209,10 @@ def _strip_or_none(value: Any) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _float_or_none(value: Any) -> float | None:
+    """Normalize optional numeric values."""
+    if value in {None, ""}:
+        return None
+    return float(value)

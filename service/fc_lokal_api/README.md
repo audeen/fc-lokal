@@ -29,7 +29,7 @@ It exposes `GET /estimate` and returns Forecast.Solar-compatible JSON.
 
 1. Copy `config.example.yaml` to `data/config.yaml`
 2. Fill in your Home Assistant URL and long-lived token
-3. Adjust coordinates and panel data
+3. Adjust coordinates, panel data, and hardware limits
 4. Start the service:
 
 ```bash
@@ -57,12 +57,51 @@ docker compose logs --tail=100 fc-lokal-api
 
 ## Notes on your sensors
 
-The provided example config uses these candidate entities from your HA instance:
+The provided example config is tuned for your Solakon + Shelly setup and uses these
+candidate entities from your HA instance:
 
-- `sensor.solakon_one_active_power`
+- `sensor.solakon_one_total_pv_power`
 - `sensor.solakon_one_daily_generation`
+- `sensor.solakon_one_active_power`
 - `sensor.shellypro3em_ac15187c6ea4_total_active_power`
 - `sensor.solakon_one_battery_combined_power`
 
-If `sensor.solakon_one_total_pv_power` turns out to be the more precise live PV sensor, replace
-`pv_power_entity_id` with that entity in `data/config.yaml`.
+`pv_power_entity_id` should point to the best available total PV power sensor. If that sensor is
+missing or unavailable, the service falls back to:
+
+- inverter AC output power
+- plus battery charge power
+- optionally reduced by grid import if battery charging from grid is possible
+
+## Limits and interpretation
+
+The example config separates three different hardware limits:
+
+- `grid_output_limit_watts`: maximum AC power delivered to the house/grid
+- `battery_charge_limit_watts`: maximum battery charge power
+- `system_total_limit_watts`: maximum total PV production that should clip the forecast
+
+For your described setup, a good starting point is:
+
+```yaml
+site:
+  grid_output_limit_watts: 1200
+  battery_charge_limit_watts: 2600
+  system_total_limit_watts: 2600
+```
+
+The Home Assistant sensor interpretation is also configurable:
+
+```yaml
+home_assistant:
+  interpretation:
+    battery_power_sign: negative_is_charging
+    grid_power_sign: positive_is_import
+    battery_charging_from_grid_possible: false
+```
+
+This means:
+
+- negative battery power values are treated as charging
+- positive grid power values are treated as import
+- battery charge power is assumed to come from PV, not from the grid

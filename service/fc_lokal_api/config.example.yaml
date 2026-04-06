@@ -2,12 +2,14 @@ site:
   latitude: 52.5200
   longitude: 13.4050
   timezone: Europe/Berlin
+  grid_output_limit_watts: 1200
+  battery_charge_limit_watts: 2600
+  system_total_limit_watts: 2600
   planes:
     - name: main_roof
       declination: 25
       azimuth: 180
       kwp: 1.6
-      inverter_watts: 1200
 
 home_assistant:
   base_url: http://homeassistant.local:8123
@@ -15,11 +17,15 @@ home_assistant:
   verify_ssl: true
   timeout_seconds: 10
   sensors:
-    pv_power_entity_id: sensor.solakon_one_active_power
+    pv_power_entity_id: sensor.solakon_one_total_pv_power
     pv_energy_today_entity_id: sensor.solakon_one_daily_generation
     inverter_power_entity_id: sensor.solakon_one_active_power
     grid_power_entity_id: sensor.shellypro3em_ac15187c6ea4_total_active_power
     battery_power_entity_id: sensor.solakon_one_battery_combined_power
+  interpretation:
+    battery_power_sign: negative_is_charging
+    grid_power_sign: positive_is_import
+    battery_charging_from_grid_possible: false
 
 open_meteo:
   base_url: https://api.open-meteo.com/v1/forecast

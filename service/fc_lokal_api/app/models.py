@@ -38,6 +38,26 @@ class SiteConfig:
     longitude: float
     timezone: str
     planes: list[PlaneConfig]
+    grid_output_limit_watts: float | None = None
+    battery_charge_limit_watts: float | None = None
+    system_total_limit_watts: float | None = None
+
+    def has_site_limits(self) -> bool:
+        """Return whether site-level hardware limits are configured."""
+        return any(
+            value is not None
+            for value in (
+                self.grid_output_limit_watts,
+                self.battery_charge_limit_watts,
+                self.system_total_limit_watts,
+            )
+        )
+
+    def effective_total_limit_watts(self) -> float | None:
+        """Return the total PV production cap for the forecast."""
+        if self.system_total_limit_watts is not None:
+            return self.system_total_limit_watts
+        return self.battery_charge_limit_watts
 
 
 @dataclass(slots=True)
@@ -81,6 +101,12 @@ class ForecastDebugInfo:
 
     modeled_power_now_watts: float | None = None
     modeled_energy_today_wh: float | None = None
+    effective_live_pv_power_watts: float | None = None
+    effective_live_pv_source: str | None = None
+    battery_charge_watts: float | None = None
+    grid_import_watts: float | None = None
+    grid_export_watts: float | None = None
     live_power_scale: float | None = None
     live_energy_scale: float | None = None
+    applied_total_limit_watts: float | None = None
     blended_scale: float = 1.0

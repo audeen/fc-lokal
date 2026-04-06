@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -24,18 +25,25 @@ class HomeAssistantClient:
     async def fetch_live_inputs(self) -> LiveInputs:
         """Fetch the configured live inputs from Home Assistant."""
         sensors = self._config.sensors
+        (
+            pv_power_watts,
+            pv_energy_today_wh,
+            inverter_power_watts,
+            grid_power_watts,
+            battery_power_watts,
+        ) = await asyncio.gather(
+            self._read_power_sensor_safe(sensors.pv_power_entity_id),
+            self._read_energy_sensor_safe(sensors.pv_energy_today_entity_id),
+            self._read_power_sensor_safe(sensors.inverter_power_entity_id),
+            self._read_power_sensor_safe(sensors.grid_power_entity_id),
+            self._read_power_sensor_safe(sensors.battery_power_entity_id),
+        )
         return LiveInputs(
-            pv_power_watts=await self._read_power_sensor_safe(sensors.pv_power_entity_id),
-            pv_energy_today_wh=await self._read_energy_sensor_safe(
-                sensors.pv_energy_today_entity_id
-            ),
-            inverter_power_watts=await self._read_power_sensor_safe(
-                sensors.inverter_power_entity_id
-            ),
-            grid_power_watts=await self._read_power_sensor_safe(sensors.grid_power_entity_id),
-            battery_power_watts=await self._read_power_sensor_safe(
-                sensors.battery_power_entity_id
-            ),
+            pv_power_watts=pv_power_watts,
+            pv_energy_today_wh=pv_energy_today_wh,
+            inverter_power_watts=inverter_power_watts,
+            grid_power_watts=grid_power_watts,
+            battery_power_watts=battery_power_watts,
         )
 
     async def fetch_state(self, entity_id: str) -> dict[str, Any] | None:
