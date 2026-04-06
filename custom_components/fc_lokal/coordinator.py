@@ -17,6 +17,7 @@ from .client import (
     ForecastSolarCustomClientConfig,
     ForecastSolarCustomClientError,
 )
+from .compat import get_plane_configs
 from .const import (
     CONF_ACTUAL_SENSOR_ENTITY_ID,
     CONF_AZIMUTH,
@@ -36,10 +37,7 @@ from .const import (
     LOGGER,
     SOURCE_MODE_CUSTOM_API,
     SOURCE_MODE_FORECAST_SOLAR_API,
-    SUBENTRY_TYPE_PLANE,
 )
-
-type ForecastSolarConfigEntry = ConfigEntry[ForecastSolarDataUpdateCoordinator]
 
 
 class ForecastProvider(Protocol):
@@ -52,10 +50,10 @@ class ForecastProvider(Protocol):
 class ForecastSolarDataUpdateCoordinator(DataUpdateCoordinator[Estimate]):
     """The FC Lokal Data Update Coordinator."""
 
-    config_entry: ForecastSolarConfigEntry
+    config_entry: "ForecastSolarConfigEntry"
     forecast: ForecastProvider
 
-    def __init__(self, hass: HomeAssistant, entry: ForecastSolarConfigEntry) -> None:
+    def __init__(self, hass: HomeAssistant, entry: "ForecastSolarConfigEntry") -> None:
         """Initialize the FC Lokal coordinator."""
         api_key = entry.options.get(CONF_API_KEY) or None
         source_mode = entry.options.get(CONF_SOURCE_MODE, DEFAULT_SOURCE_MODE)
@@ -65,15 +63,15 @@ class ForecastSolarDataUpdateCoordinator(DataUpdateCoordinator[Estimate]):
         if inverter_size is not None and inverter_size > 0:
             inverter_size = inverter_size / 1000
 
-        plane_subentries = entry.get_subentries_of_type(SUBENTRY_TYPE_PLANE)
-        main_plane = plane_subentries[0]
+        plane_configs = get_plane_configs(entry)
+        main_plane = plane_configs[0]
         planes: list[Plane] = [
             Plane(
-                declination=subentry.data[CONF_DECLINATION],
-                azimuth=(subentry.data[CONF_AZIMUTH] - 180),
-                kwp=(subentry.data[CONF_MODULES_POWER] / 1000),
+                declination=plane_config[CONF_DECLINATION],
+                azimuth=(plane_config[CONF_AZIMUTH] - 180),
+                kwp=(plane_config[CONF_MODULES_POWER] / 1000),
             )
-            for subentry in plane_subentries[1:]
+            for plane_config in plane_configs[1:]
         ]
 
         session = async_get_clientsession(hass)
@@ -85,9 +83,9 @@ class ForecastSolarDataUpdateCoordinator(DataUpdateCoordinator[Estimate]):
                 config=ForecastSolarCustomClientConfig(
                     latitude=entry.data[CONF_LATITUDE],
                     longitude=entry.data[CONF_LONGITUDE],
-                    declination=main_plane.data[CONF_DECLINATION],
-                    azimuth=(main_plane.data[CONF_AZIMUTH] - 180),
-                    kwp=(main_plane.data[CONF_MODULES_POWER] / 1000),
+                    declination=main_plane[CONF_DECLINATION],
+                    azimuth=(main_plane[CONF_AZIMUTH] - 180),
+                    kwp=(main_plane[CONF_MODULES_POWER] / 1000),
                     damping_morning=entry.options.get(
                         CONF_DAMPING_MORNING, DEFAULT_DAMPING
                     ),
@@ -111,9 +109,9 @@ class ForecastSolarDataUpdateCoordinator(DataUpdateCoordinator[Estimate]):
                 session=session,
                 latitude=entry.data[CONF_LATITUDE],
                 longitude=entry.data[CONF_LONGITUDE],
-                declination=main_plane.data[CONF_DECLINATION],
-                azimuth=(main_plane.data[CONF_AZIMUTH] - 180),
-                kwp=(main_plane.data[CONF_MODULES_POWER] / 1000),
+                declination=main_plane[CONF_DECLINATION],
+                azimuth=(main_plane[CONF_AZIMUTH] - 180),
+                kwp=(main_plane[CONF_MODULES_POWER] / 1000),
                 damping_morning=entry.options.get(CONF_DAMPING_MORNING, DEFAULT_DAMPING),
                 damping_evening=entry.options.get(CONF_DAMPING_EVENING, DEFAULT_DAMPING),
                 inverter=inverter_size,
@@ -127,7 +125,7 @@ class ForecastSolarDataUpdateCoordinator(DataUpdateCoordinator[Estimate]):
         LOGGER.debug(
             "Initializing FC Lokal coordinator with source_mode=%s, planes=%s, update_interval=%s",
             source_mode,
-            len(plane_subentries),
+            len(plane_configs),
             update_interval,
         )
 
@@ -188,3 +186,6 @@ class ForecastSolarDataUpdateCoordinator(DataUpdateCoordinator[Estimate]):
                 state.state,
             )
             return None
+
+
+ForecastSolarConfigEntry = ConfigEntry[ForecastSolarDataUpdateCoordinator]

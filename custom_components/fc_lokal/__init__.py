@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from types import MappingProxyType
-
-from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import CONF_API_KEY, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 
+from .compat import get_plane_configs
 from .const import (
     CONF_AZIMUTH,
     CONF_BASE_URL,
@@ -20,7 +18,6 @@ from .const import (
     DEFAULT_MODULES_POWER,
     DOMAIN,
     SOURCE_MODE_FORECAST_SOLAR_API,
-    SUBENTRY_TYPE_PLANE,
 )
 from .coordinator import ForecastSolarConfigEntry, ForecastSolarDataUpdateCoordinator
 
@@ -32,38 +29,34 @@ async def async_migrate_entry(
 ) -> bool:
     """Migrate old config entry."""
     if entry.version == 1:
-        new_options = entry.options.copy()
-        new_options |= {
-            CONF_MODULES_POWER: new_options.pop("modules power"),
-            "damping_morning": new_options.get("damping", 0.0),
-            "damping_evening": new_options.pop("damping", 0.0),
-        }
+        new_data = dict(entry.data)
+        new_options = dict(entry.options)
+        if "modules power" in new_options:
+            new_data[CONF_MODULES_POWER] = new_options.pop("modules power")
+        if CONF_DECLINATION in new_options:
+            new_data[CONF_DECLINATION] = new_options.pop(CONF_DECLINATION)
+        if CONF_AZIMUTH in new_options:
+            new_data[CONF_AZIMUTH] = new_options.pop(CONF_AZIMUTH)
+        new_options["damping_morning"] = new_options.get("damping", 0.0)
+        new_options["damping_evening"] = new_options.pop("damping", 0.0)
         hass.config_entries.async_update_entry(
-            entry, data=entry.data, options=new_options, version=2
+            entry, data=new_data, options=new_options, version=2
         )
 
     if entry.version == 2:
-        declination = entry.options.get(CONF_DECLINATION, DEFAULT_DECLINATION)
-        azimuth = entry.options.get(CONF_AZIMUTH, DEFAULT_AZIMUTH)
-        modules_power = entry.options.get(CONF_MODULES_POWER, DEFAULT_MODULES_POWER)
-        subentry = ConfigSubentry(
-            data=MappingProxyType(
-                {
-                    CONF_DECLINATION: declination,
-                    CONF_AZIMUTH: azimuth,
-                    CONF_MODULES_POWER: modules_power,
-                }
-            ),
-            subentry_type=SUBENTRY_TYPE_PLANE,
-            title=f"{declination}° / {azimuth}° / {modules_power}W",
-            unique_id=None,
-        )
-        hass.config_entries.async_add_subentry(entry, subentry)
+        new_data = dict(entry.data)
         new_options = dict(entry.options)
-        new_options.pop(CONF_DECLINATION, None)
-        new_options.pop(CONF_AZIMUTH, None)
-        new_options.pop(CONF_MODULES_POWER, None)
-        hass.config_entries.async_update_entry(entry, options=new_options, version=3)
+        new_data.setdefault(
+            CONF_DECLINATION, new_options.pop(CONF_DECLINATION, DEFAULT_DECLINATION)
+        )
+        new_data.setdefault(CONF_AZIMUTH, new_options.pop(CONF_AZIMUTH, DEFAULT_AZIMUTH))
+        new_data.setdefault(
+            CONF_MODULES_POWER,
+            new_options.pop(CONF_MODULES_POWER, DEFAULT_MODULES_POWER),
+        )
+        hass.config_entries.async_update_entry(
+            entry, data=new_data, options=new_options, version=3
+        )
 
     if entry.version == 3:
         new_options = dict(entry.options)
@@ -78,13 +71,13 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ForecastSolarConfigEntry
 ) -> bool:
     """Set up FC Lokal from a config entry."""
-    plane_subentries = entry.get_subentries_of_type(SUBENTRY_TYPE_PLANE)
-    if not plane_subentries:
+    plane_configs = get_plane_configs(entry)
+    if not plane_configs:
         raise ConfigEntryError(translation_domain=DOMAIN, translation_key="no_plane")
 
     source_mode = entry.options.get(CONF_SOURCE_MODE, SOURCE_MODE_FORECAST_SOLAR_API)
     if source_mode == SOURCE_MODE_FORECAST_SOLAR_API:
-        if len(plane_subentries) > 1 and not entry.options.get(CONF_API_KEY):
+        if len(plane_configs) > 1 and not entry.options.get(CONF_API_KEY):
             raise ConfigEntryError(
                 translation_domain=DOMAIN,
                 translation_key="api_key_required",
@@ -107,7 +100,7 @@ async def async_setup_entry(
 async def _async_update_listener(
     hass: HomeAssistant, entry: ForecastSolarConfigEntry
 ) -> None:
-    """Handle config entry updates (options or subentry changes)."""
+    """Handle config entry updates."""
     hass.config_entries.async_schedule_reload(entry.entry_id)
 
 

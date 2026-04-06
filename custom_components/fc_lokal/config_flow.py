@@ -7,18 +7,12 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import (
-    ConfigEntry,
-    ConfigFlow,
-    ConfigFlowResult,
-    ConfigSubentryFlow,
-    OptionsFlow,
-    SubentryFlowResult,
-)
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_API_KEY, CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
 from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv, selector
 
+from .compat import ConfigSubentryFlow, HAS_CONFIG_SUBENTRIES, get_plane_count
 from .const import (
     CONF_ACTUAL_SENSOR_ENTITY_ID,
     CONF_AZIMUTH,
@@ -38,10 +32,8 @@ from .const import (
     DEFAULT_REQUEST_TIMEOUT,
     DEFAULT_SOURCE_MODE,
     DOMAIN,
-    MAX_PLANES,
     SOURCE_MODE_CUSTOM_API,
     SOURCE_MODE_FORECAST_SOLAR_API,
-    SUBENTRY_TYPE_PLANE,
 )
 
 RE_API_KEY = re.compile(r"^[a-zA-Z0-9]{16}$")
@@ -85,7 +77,7 @@ class ForecastSolarFlowHandler(ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(
         config_entry: ConfigEntry,
-    ) -> ForecastSolarOptionFlowHandler:
+    ) -> "ForecastSolarOptionFlowHandler":
         """Get the options flow for this handler."""
         return ForecastSolarOptionFlowHandler()
 
@@ -95,7 +87,9 @@ class ForecastSolarFlowHandler(ConfigFlow, domain=DOMAIN):
         cls, config_entry: ConfigEntry
     ) -> dict[str, type[ConfigSubentryFlow]]:
         """Return subentries supported by this handler."""
-        return {SUBENTRY_TYPE_PLANE: PlaneSubentryFlowHandler}
+        if not HAS_CONFIG_SUBENTRIES:
+            return {}
+        return {}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -107,23 +101,10 @@ class ForecastSolarFlowHandler(ConfigFlow, domain=DOMAIN):
                 data={
                     CONF_LATITUDE: user_input[CONF_LATITUDE],
                     CONF_LONGITUDE: user_input[CONF_LONGITUDE],
+                    CONF_DECLINATION: user_input[CONF_DECLINATION],
+                    CONF_AZIMUTH: user_input[CONF_AZIMUTH],
+                    CONF_MODULES_POWER: user_input[CONF_MODULES_POWER],
                 },
-                subentries=[
-                    {
-                        "subentry_type": SUBENTRY_TYPE_PLANE,
-                        "data": {
-                            CONF_DECLINATION: user_input[CONF_DECLINATION],
-                            CONF_AZIMUTH: user_input[CONF_AZIMUTH],
-                            CONF_MODULES_POWER: user_input[CONF_MODULES_POWER],
-                        },
-                        "title": (
-                            f"{user_input[CONF_DECLINATION]}° / "
-                            f"{user_input[CONF_AZIMUTH]}° / "
-                            f"{user_input[CONF_MODULES_POWER]}W"
-                        ),
-                        "unique_id": None,
-                    }
-                ],
             )
 
         return self.async_show_form(
@@ -164,9 +145,7 @@ class ForecastSolarOptionFlowHandler(OptionsFlow):
         if user_input is not None:
             source_mode = user_input.get(CONF_SOURCE_MODE, DEFAULT_SOURCE_MODE)
             selected_source_mode = source_mode
-            planes_count = len(
-                self.config_entry.get_subentries_of_type(SUBENTRY_TYPE_PLANE)
-            )
+            planes_count = get_plane_count(self.config_entry)
             api_key = user_input.get(CONF_API_KEY) or None
             base_url = (user_input.get(CONF_BASE_URL) or "").strip().rstrip("/")
             use_live_actual = user_input.get(CONF_USE_LIVE_ACTUAL, False)
@@ -203,7 +182,7 @@ class ForecastSolarOptionFlowHandler(OptionsFlow):
                     },
                 )
 
-        planes_count = len(self.config_entry.get_subentries_of_type(SUBENTRY_TYPE_PLANE))
+        planes_count = get_plane_count(self.config_entry)
         suggested_api_key = self.config_entry.options.get(CONF_API_KEY, "")
 
         schema: dict[vol.Marker, Any] = {
@@ -317,89 +296,4 @@ class ForecastSolarOptionFlowHandler(OptionsFlow):
             step_id="init",
             data_schema=vol.Schema(schema),
             errors=errors,
-        )
-
-
-class PlaneSubentryFlowHandler(ConfigSubentryFlow):
-    """Handle a subentry flow for adding/editing a plane."""
-
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        """Handle the user step to add a new plane."""
-        entry = self._get_entry()
-        planes_count = len(entry.get_subentries_of_type(SUBENTRY_TYPE_PLANE))
-        source_mode = entry.options.get(CONF_SOURCE_MODE, DEFAULT_SOURCE_MODE)
-
-        if planes_count >= MAX_PLANES:
-            return self.async_abort(reason="max_planes")
-        if (
-            planes_count >= 1
-            and source_mode == SOURCE_MODE_FORECAST_SOLAR_API
-            and not entry.options.get(CONF_API_KEY)
-        ):
-            return self.async_abort(reason="api_key_required")
-
-        if user_input is not None:
-            return self.async_create_entry(
-                title=(
-                    f"{user_input[CONF_DECLINATION]}° / "
-                    f"{user_input[CONF_AZIMUTH]}° / "
-                    f"{user_input[CONF_MODULES_POWER]}W"
-                ),
-                data={
-                    CONF_DECLINATION: user_input[CONF_DECLINATION],
-                    CONF_AZIMUTH: user_input[CONF_AZIMUTH],
-                    CONF_MODULES_POWER: user_input[CONF_MODULES_POWER],
-                },
-            )
-
-        return self.async_show_form(
-            step_id="user",
-            data_schema=self.add_suggested_values_to_schema(
-                PLANE_SCHEMA,
-                {
-                    CONF_DECLINATION: DEFAULT_DECLINATION,
-                    CONF_AZIMUTH: DEFAULT_AZIMUTH,
-                    CONF_MODULES_POWER: DEFAULT_MODULES_POWER,
-                },
-            ),
-        )
-
-    async def async_step_reconfigure(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        """Handle reconfiguration of an existing plane."""
-        subentry = self._get_reconfigure_subentry()
-
-        if user_input is not None:
-            entry = self._get_entry()
-            if self._async_update(
-                entry,
-                subentry,
-                data={
-                    CONF_DECLINATION: user_input[CONF_DECLINATION],
-                    CONF_AZIMUTH: user_input[CONF_AZIMUTH],
-                    CONF_MODULES_POWER: user_input[CONF_MODULES_POWER],
-                },
-                title=(
-                    f"{user_input[CONF_DECLINATION]}° / "
-                    f"{user_input[CONF_AZIMUTH]}° / "
-                    f"{user_input[CONF_MODULES_POWER]}W"
-                ),
-            ):
-                if not entry.update_listeners:
-                    self.hass.config_entries.async_schedule_reload(entry.entry_id)
-                return self.async_abort(reason="reconfigure_successful")
-
-        return self.async_show_form(
-            step_id="reconfigure",
-            data_schema=self.add_suggested_values_to_schema(
-                PLANE_SCHEMA,
-                {
-                    CONF_DECLINATION: subentry.data[CONF_DECLINATION],
-                    CONF_AZIMUTH: subentry.data[CONF_AZIMUTH],
-                    CONF_MODULES_POWER: subentry.data[CONF_MODULES_POWER],
-                },
-            ),
         )
