@@ -43,6 +43,8 @@ pvgis:
   timeout_seconds: 30
 
 engine:
+  use_pvgis_calibration: true
+  pvgis_weight: 0.35
   min_scale: 0.25
   max_scale: 1.6
   live_power_weight: 0.55

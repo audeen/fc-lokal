@@ -9,6 +9,13 @@ It exposes `GET /estimate` and returns Forecast.Solar-compatible JSON.
 - Open-Meteo: free no-key weather and irradiance forecast API
 - Home Assistant REST API: live correction using entity states
 
+The forecast pipeline remains Forecast.Solar-compatible and now runs in this order:
+
+1. Open-Meteo irradiance curve
+2. PVGIS seasonal/day-energy calibration
+3. Home Assistant live correction
+4. Final total-system clipping
+
 ## Endpoints
 
 - `GET /health`
@@ -105,3 +112,25 @@ This means:
 - negative battery power values are treated as charging
 - positive grid power values are treated as import
 - battery charge power is assumed to come from PV, not from the grid
+
+## PVGIS calibration
+
+The service can pre-calibrate the Open-Meteo curve with PVGIS before the Home Assistant
+live correction is applied. It uses the configured plane geometry for each roof plane,
+reads the monthly PVGIS average daily energy (`E_d`) per plane, sums the expected day
+energy for the forecast date, and compares that with the Open-Meteo day total.
+
+The resulting PVGIS ratio is not applied fully by default. Instead it is blended back
+toward `1.0` with `engine.pvgis_weight`, so the weather-driven curve stays dominant and
+PVGIS mainly acts as a seasonal/geometric baseline.
+
+Example:
+
+```yaml
+engine:
+  use_pvgis_calibration: true
+  pvgis_weight: 0.35
+```
+
+`GET /health` now also reports `pvgis_calibration` debug data with the current blended
+factor, rough expected PVGIS day energy, and whether the pre-calibration was active.

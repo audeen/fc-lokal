@@ -1,8 +1,11 @@
+# Live panel: set FC_LOKAL_LIVE_CONSOLE under environment and use tty/stdin_open below.
 services:
   fc-lokal-api:
     build: .
     container_name: fc-lokal-api
     restart: unless-stopped
+    tty: true
+    stdin_open: true
     ports:
       - "8000:8000"
     environment:

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -13,9 +15,14 @@ from .clients.open_meteo import OpenMeteoClient
 from .clients.pvgis import PVGISClient
 from .config import AppConfig, load_config
 from .engine import ForecastEngine
+from .live_console import run_live_console, summarize_estimate_payload
 from .models import EstimateRequest, PlaneConfig
 
 CONFIG_PATH = os.getenv("FC_LOKAL_CONFIG", "/data/config.yaml")
+
+
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 @asynccontextmanager
@@ -46,10 +53,25 @@ async def lifespan(app: FastAPI):
         ha_client=ha_client,
         pvgis_client=pvgis_client,
     )
+    app.state.last_estimate_meta = None
+
+    live_task: asyncio.Task[None] | None = None
+    if _env_truthy("FC_LOKAL_LIVE_CONSOLE"):
+        print(
+            "fc-lokal-api: live console enabled (Rich); requires container TTY — use tty: true in docker-compose",
+            flush=True,
+        )
+        live_task = asyncio.create_task(run_live_console(app))
 
     try:
         yield
     finally:
+        if live_task:
+            live_task.cancel()
+            try:
+                await live_task
+            except asyncio.CancelledError:
+                pass
         await public_http.aclose()
         await ha_http.aclose()
 
@@ -85,7 +107,11 @@ async def estimate(
         inverter_kw=inverter,
         extra_planes=_parse_extra_planes(request),
     )
-    return await app.state.engine.build_estimate(estimate_request)
+    result = await app.state.engine.build_estimate(estimate_request)
+    tz = app.state.config.site.timezone
+    summary = summarize_estimate_payload(result, timezone=tz)
+    app.state.last_estimate_meta = {"unix_time": time.time(), **summary}
+    return result
 
 
 def _parse_extra_planes(request: Request) -> list[PlaneConfig]:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -13,7 +13,14 @@ from .clients.ha import HomeAssistantClient
 from .clients.open_meteo import OpenMeteoClient
 from .clients.pvgis import PVGISClient
 from .config import AppConfig
-from .models import EstimateRequest, ForecastDebugInfo, LiveInputs, PlaneConfig, SiteConfig
+from .models import (
+    EstimateRequest,
+    ForecastDebugInfo,
+    LiveInputs,
+    PVGISPlaneBaseline,
+    PlaneConfig,
+    SiteConfig,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -48,14 +55,23 @@ class ForecastEngine:
         )
 
         modeled = self._combine_plane_forecasts(site=site, plane_forecasts=plane_forecasts)
-        adjusted, _debug = self._apply_live_correction(
+        pvgis_adjusted, _pvgis_debug = await self._apply_pvgis_calibration(
             timestamps_to_power=modeled,
+            site=site,
+            timezone=site.timezone,
+        )
+        adjusted, _debug = self._apply_live_correction(
+            timestamps_to_power=pvgis_adjusted,
             live_inputs=live_inputs,
             site=site,
             timezone=site.timezone,
         )
-        return self._to_forecast_solar_payload(
+        limited = self._apply_total_limit(
             timestamps_to_power=adjusted,
+            total_limit_watts=site.effective_total_limit_watts(),
+        )
+        return self._to_forecast_solar_payload(
+            timestamps_to_power=limited,
             timezone=site.timezone,
         )
 
@@ -63,6 +79,7 @@ class ForecastEngine:
         """Return a simple health snapshot."""
         baseline = None
         live_inputs = None
+        pvgis_calibration = await self._build_health_pvgis_calibration()
         if self._pvgis_client and self._config.pvgis.enabled:
             try:
                 baseline = await self._pvgis_client.fetch_baseline(
@@ -109,6 +126,7 @@ class ForecastEngine:
             },
             "live_inputs": live_inputs,
             "pvgis_sample": baseline,
+            "pvgis_calibration": pvgis_calibration,
         }
 
     async def _fetch_live_inputs(self, request: EstimateRequest) -> LiveInputs:
@@ -203,12 +221,99 @@ class ForecastEngine:
 
                 combined[point.timestamp] = combined.get(point.timestamp, 0.0) + plane_power
 
-        total_limit = site.effective_total_limit_watts()
-        clipped = {
-            timestamp: min(power, total_limit) if total_limit is not None else power
-            for timestamp, power in combined.items()
+        return dict(sorted(combined.items()))
+
+    async def _apply_pvgis_calibration(
+        self,
+        *,
+        timestamps_to_power: dict[datetime, float],
+        site: SiteConfig,
+        timezone: str,
+    ) -> tuple[dict[datetime, float], ForecastDebugInfo]:
+        """Scale the weather curve toward a PVGIS seasonal baseline."""
+        weight = self._normalized_pvgis_weight()
+        debug = ForecastDebugInfo(
+            pvgis_calibration_enabled=self._pvgis_calibration_enabled(),
+            pvgis_weight=weight,
+        )
+        if not timestamps_to_power or not debug.pvgis_calibration_enabled:
+            return timestamps_to_power, debug
+        if self._pvgis_client is None:
+            return timestamps_to_power, debug
+
+        try:
+            baselines = await asyncio.gather(
+                *[
+                    self._pvgis_client.fetch_plane_baseline(site=site, plane=plane)
+                    for plane in site.planes
+                ]
+            )
+        except Exception as err:  # noqa: BLE001
+            LOGGER.warning("Failed to fetch PVGIS baselines for calibration: %s", err)
+            return timestamps_to_power, debug
+
+        tz = ZoneInfo(timezone)
+        modeled_daily_energy_wh = self._daily_energy_by_local_day(
+            timestamps_to_power=timestamps_to_power,
+            timezone=tz,
+        )
+        expected_daily_energy_wh = self._expected_pvgis_energy_by_local_day(
+            baselines=baselines,
+            days=list(modeled_daily_energy_wh),
+        )
+
+        if not expected_daily_energy_wh:
+            LOGGER.debug("Skipping PVGIS calibration because no daily baseline could be derived")
+            return timestamps_to_power, debug
+
+        today = datetime.now(tz).date()
+        debug.pvgis_modeled_energy_today_wh = modeled_daily_energy_wh.get(today)
+        debug.pvgis_expected_energy_today_wh = expected_daily_energy_wh.get(today)
+
+        day_scales: dict[date, float] = {}
+        for day, modeled_energy_wh in modeled_daily_energy_wh.items():
+            expected_energy_wh = expected_daily_energy_wh.get(day)
+            raw_scale = self._raw_scale(
+                live_value=expected_energy_wh,
+                modeled_value=modeled_energy_wh,
+            )
+            if raw_scale is None:
+                continue
+
+            blended_scale = self._clip_scale(1.0 + (raw_scale - 1.0) * weight)
+            day_scales[day] = blended_scale
+            if day == today:
+                debug.pvgis_raw_scale = raw_scale
+                debug.pvgis_scale = blended_scale
+
+        if not day_scales:
+            LOGGER.debug("Skipping PVGIS calibration because no valid daily factors were available")
+            return timestamps_to_power, debug
+
+        adjusted = {
+            timestamp: max(
+                power * day_scales.get(timestamp.astimezone(tz).date(), 1.0),
+                0.0,
+            )
+            for timestamp, power in timestamps_to_power.items()
         }
-        return dict(sorted(clipped.items()))
+        today_scale = day_scales.get(today)
+        if today_scale is not None:
+            debug.pvgis_calibration_active = abs(today_scale - 1.0) > 1e-6
+        else:
+            debug.pvgis_calibration_active = any(
+                abs(scale - 1.0) > 1e-6 for scale in day_scales.values()
+            )
+        LOGGER.debug(
+            "Applied PVGIS calibration: weight=%.3f today_expected_wh=%s "
+            "today_modeled_wh=%s today_raw_scale=%s today_factor=%s",
+            debug.pvgis_weight,
+            debug.pvgis_expected_energy_today_wh,
+            debug.pvgis_modeled_energy_today_wh,
+            debug.pvgis_raw_scale,
+            debug.pvgis_scale,
+        )
+        return dict(sorted(adjusted.items())), debug
 
     def _apply_live_correction(
         self,
@@ -226,6 +331,7 @@ class ForecastEngine:
         tz = ZoneInfo(timezone)
         now = datetime.now(tz)
         current_hour = now.replace(minute=0, second=0, microsecond=0)
+        debug.applied_total_limit_watts = site.effective_total_limit_watts()
 
         modeled_power_now = timestamps_to_power.get(current_hour)
         debug.modeled_power_now_watts = modeled_power_now
@@ -273,28 +379,138 @@ class ForecastEngine:
 
         total_weight = sum(weight for _, weight in weighted_scales)
         debug.blended_scale = sum(scale * weight for scale, weight in weighted_scales) / total_weight
-        debug.applied_total_limit_watts = site.effective_total_limit_watts()
 
         adjusted = {
             timestamp: max(power * debug.blended_scale, 0.0)
             for timestamp, power in timestamps_to_power.items()
         }
-        if debug.applied_total_limit_watts is not None:
-            adjusted = {
-                timestamp: min(power, debug.applied_total_limit_watts)
-                for timestamp, power in adjusted.items()
-            }
-
         return (adjusted, debug)
 
     def _scale_from_live_value(
         self, *, live_value: float | None, modeled_value: float | None
     ) -> float | None:
         """Turn a live value into a clipped scale factor."""
+        scale = self._raw_scale(live_value=live_value, modeled_value=modeled_value)
+        if scale is None:
+            return None
+        return self._clip_scale(scale)
+
+    def _apply_total_limit(
+        self,
+        *,
+        timestamps_to_power: dict[datetime, float],
+        total_limit_watts: float | None,
+    ) -> dict[datetime, float]:
+        """Apply the configured total system cap as the final forecast step."""
+        if total_limit_watts is None:
+            return timestamps_to_power
+        return {
+            timestamp: min(power, total_limit_watts)
+            for timestamp, power in timestamps_to_power.items()
+        }
+
+    async def _build_health_pvgis_calibration(self) -> dict[str, Any]:
+        """Build calibration debug data for the health endpoint."""
+        calibration = {
+            "enabled": self._pvgis_calibration_enabled(),
+            "active": False,
+            "factor": None,
+            "expected_energy_today_wh": None,
+            "modeled_energy_today_wh": None,
+            "weight": self._normalized_pvgis_weight(),
+        }
+        if not calibration["enabled"]:
+            return calibration
+
+        try:
+            plane_forecasts = await asyncio.gather(
+                *[
+                    self._weather_client.fetch_plane_forecast(
+                        site=self._config.site,
+                        plane=plane,
+                    )
+                    for plane in self._config.site.planes
+                ]
+            )
+            modeled = self._combine_plane_forecasts(
+                site=self._config.site,
+                plane_forecasts=plane_forecasts,
+            )
+            _, debug = await self._apply_pvgis_calibration(
+                timestamps_to_power=modeled,
+                site=self._config.site,
+                timezone=self._config.site.timezone,
+            )
+        except Exception as err:  # noqa: BLE001
+            LOGGER.warning("Failed to build PVGIS calibration health data: %s", err)
+            calibration["error"] = str(err)
+            return calibration
+
+        calibration["active"] = debug.pvgis_calibration_active
+        calibration["factor"] = debug.pvgis_scale if debug.pvgis_calibration_active else 1.0
+        calibration["expected_energy_today_wh"] = debug.pvgis_expected_energy_today_wh
+        calibration["modeled_energy_today_wh"] = debug.pvgis_modeled_energy_today_wh
+        calibration["raw_scale"] = debug.pvgis_raw_scale
+        return calibration
+
+    def _daily_energy_by_local_day(
+        self,
+        *,
+        timestamps_to_power: dict[datetime, float],
+        timezone: ZoneInfo,
+    ) -> dict[date, float]:
+        """Sum hourly forecast values into per-day energy buckets."""
+        daily_energy_wh: dict[date, float] = {}
+        for timestamp, power in timestamps_to_power.items():
+            local_day = timestamp.astimezone(timezone).date()
+            daily_energy_wh[local_day] = daily_energy_wh.get(local_day, 0.0) + power
+        return dict(sorted(daily_energy_wh.items()))
+
+    def _expected_pvgis_energy_by_local_day(
+        self,
+        *,
+        baselines: list[PVGISPlaneBaseline],
+        days: list[date],
+    ) -> dict[date, float]:
+        """Resolve summed PVGIS expected daily energy for each forecast day."""
+        expected_daily_energy_wh: dict[date, float] = {}
+        for day in days:
+            total_energy_wh = 0.0
+            found_any = False
+            for baseline in baselines:
+                plane_energy_wh = baseline.expected_daily_energy_wh(day=day)
+                if plane_energy_wh is None:
+                    continue
+                total_energy_wh += plane_energy_wh
+                found_any = True
+            if found_any:
+                expected_daily_energy_wh[day] = total_energy_wh
+        return expected_daily_energy_wh
+
+    def _pvgis_calibration_enabled(self) -> bool:
+        """Return whether PVGIS-based pre-calibration is active."""
+        return (
+            self._config.engine.use_pvgis_calibration
+            and self._config.pvgis.enabled
+            and self._pvgis_client is not None
+        )
+
+    def _normalized_pvgis_weight(self) -> float:
+        """Clamp the configurable PVGIS blending weight to a safe range."""
+        return max(0.0, min(1.0, self._config.engine.pvgis_weight))
+
+    def _clip_scale(self, scale: float) -> float:
+        """Clamp any scale factor to the configured safety range."""
+        return max(self._config.engine.min_scale, min(self._config.engine.max_scale, scale))
+
+    @staticmethod
+    def _raw_scale(
+        *, live_value: float | None, modeled_value: float | None
+    ) -> float | None:
+        """Calculate an unclipped raw ratio between two values."""
         if live_value is None or modeled_value in {None, 0}:
             return None
-        scale = live_value / modeled_value
-        return max(self._config.engine.min_scale, min(self._config.engine.max_scale, scale))
+        return live_value / modeled_value
 
     def _resolve_live_pv_power(
         self,

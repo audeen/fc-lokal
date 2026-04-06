@@ -77,6 +77,8 @@ class PVGISConfig:
 class EngineConfig:
     """Forecast tuning parameters."""
 
+    use_pvgis_calibration: bool = True
+    pvgis_weight: float = 0.35
     min_scale: float = 0.25
     max_scale: float = 1.6
     live_power_weight: float = 0.55
@@ -176,6 +178,10 @@ def load_config(path: str | Path) -> AppConfig:
             timeout_seconds=int(pvgis_raw.get("timeout_seconds", 30)),
         ),
         engine=EngineConfig(
+            use_pvgis_calibration=bool(
+                engine_raw.get("use_pvgis_calibration", True)
+            ),
+            pvgis_weight=float(engine_raw.get("pvgis_weight", 0.35)),
             min_scale=float(engine_raw.get("min_scale", 0.25)),
             max_scale=float(engine_raw.get("max_scale", 1.6)),
             live_power_weight=float(engine_raw.get("live_power_weight", 0.55)),

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Any
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 
 
 @dataclass(slots=True)
@@ -96,9 +97,34 @@ class LiveInputs:
 
 
 @dataclass(slots=True)
+class PVGISPlaneBaseline:
+    """Parsed PVGIS baseline data for one configured PV plane."""
+
+    plane_name: str
+    monthly_daily_energy_kwh: dict[int, float] = field(default_factory=dict)
+    monthly_energy_kwh: dict[int, float] = field(default_factory=dict)
+    annual_energy_kwh: float | None = None
+    raw_payload: dict[str, Any] = field(default_factory=dict)
+
+    def expected_daily_energy_wh(self, *, day: date) -> float | None:
+        """Return the expected average daily energy for the given date."""
+        energy_kwh = self.monthly_daily_energy_kwh.get(day.month)
+        if energy_kwh is None:
+            return None
+        return energy_kwh * 1000
+
+
+@dataclass(slots=True)
 class ForecastDebugInfo:
     """Intermediate values that help to understand the forecast."""
 
+    pvgis_calibration_enabled: bool = False
+    pvgis_calibration_active: bool = False
+    pvgis_weight: float | None = None
+    pvgis_expected_energy_today_wh: float | None = None
+    pvgis_modeled_energy_today_wh: float | None = None
+    pvgis_raw_scale: float | None = None
+    pvgis_scale: float = 1.0
     modeled_power_now_watts: float | None = None
     modeled_energy_today_wh: float | None = None
     effective_live_pv_power_watts: float | None = None
