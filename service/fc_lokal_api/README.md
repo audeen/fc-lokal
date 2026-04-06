@@ -43,6 +43,18 @@ curl http://localhost:8000/health
 curl http://localhost:8000/estimate
 ```
 
+If you change `data/config.yaml`, restart the service so the new config is loaded:
+
+```bash
+docker compose up -d --build
+```
+
+If `/estimate` returns an error, inspect the container logs:
+
+```bash
+docker compose logs --tail=100 fc-lokal-api
+```
+
 ## Notes on your sensors
 
 The provided example config uses these candidate entities from your HA instance:

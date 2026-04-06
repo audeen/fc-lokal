@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from datetime import datetime
 from typing import Any
@@ -13,6 +14,8 @@ from .clients.open_meteo import OpenMeteoClient
 from .clients.pvgis import PVGISClient
 from .config import AppConfig
 from .models import EstimateRequest, ForecastDebugInfo, LiveInputs, PlaneConfig, SiteConfig
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ForecastEngine:
@@ -80,7 +83,10 @@ class ForecastEngine:
         """Fetch live inputs from Home Assistant and query overrides."""
         live_inputs = LiveInputs()
         if self._ha_client and self._config.home_assistant.enabled:
-            live_inputs = await self._ha_client.fetch_live_inputs()
+            try:
+                live_inputs = await self._ha_client.fetch_live_inputs()
+            except Exception as err:  # noqa: BLE001
+                LOGGER.warning("Failed to fetch live inputs from Home Assistant: %s", err)
 
         if request.actual is not None:
             live_inputs.pv_energy_today_wh = self._normalize_unknown_energy(request.actual)

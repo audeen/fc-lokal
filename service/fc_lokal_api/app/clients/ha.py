@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 
 from ..config import HomeAssistantConfig
 from ..models import LiveInputs
+
+LOGGER = logging.getLogger(__name__)
 
 
 class HomeAssistantClient:
@@ -22,15 +25,15 @@ class HomeAssistantClient:
         """Fetch the configured live inputs from Home Assistant."""
         sensors = self._config.sensors
         return LiveInputs(
-            pv_power_watts=await self._read_power_sensor(sensors.pv_power_entity_id),
-            pv_energy_today_wh=await self._read_energy_sensor(
+            pv_power_watts=await self._read_power_sensor_safe(sensors.pv_power_entity_id),
+            pv_energy_today_wh=await self._read_energy_sensor_safe(
                 sensors.pv_energy_today_entity_id
             ),
-            inverter_power_watts=await self._read_power_sensor(
+            inverter_power_watts=await self._read_power_sensor_safe(
                 sensors.inverter_power_entity_id
             ),
-            grid_power_watts=await self._read_power_sensor(sensors.grid_power_entity_id),
-            battery_power_watts=await self._read_power_sensor(
+            grid_power_watts=await self._read_power_sensor_safe(sensors.grid_power_entity_id),
+            battery_power_watts=await self._read_power_sensor_safe(
                 sensors.battery_power_entity_id
             ),
         )
@@ -61,6 +64,42 @@ class HomeAssistantClient:
             return None
         state = await self.fetch_state(entity_id)
         return self._normalize_energy_wh(state)
+
+    async def _read_power_sensor_safe(self, entity_id: str | None) -> float | None:
+        """Read a power sensor, but do not fail the whole forecast on API issues."""
+        try:
+            return await self._read_power_sensor(entity_id)
+        except httpx.HTTPStatusError as err:
+            LOGGER.warning(
+                "Home Assistant power sensor request failed for %s: %s",
+                entity_id,
+                err,
+            )
+        except httpx.HTTPError as err:
+            LOGGER.warning(
+                "Home Assistant power sensor request errored for %s: %s",
+                entity_id,
+                err,
+            )
+        return None
+
+    async def _read_energy_sensor_safe(self, entity_id: str | None) -> float | None:
+        """Read an energy sensor, but do not fail the whole forecast on API issues."""
+        try:
+            return await self._read_energy_sensor(entity_id)
+        except httpx.HTTPStatusError as err:
+            LOGGER.warning(
+                "Home Assistant energy sensor request failed for %s: %s",
+                entity_id,
+                err,
+            )
+        except httpx.HTTPError as err:
+            LOGGER.warning(
+                "Home Assistant energy sensor request errored for %s: %s",
+                entity_id,
+                err,
+            )
+        return None
 
     @staticmethod
     def _normalize_power_watts(state: dict[str, Any] | None) -> float | None:
