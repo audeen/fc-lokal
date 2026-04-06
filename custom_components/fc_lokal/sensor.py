@@ -21,7 +21,8 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import ForecastSolarConfigEntry
+from homeassistant.config_entries import ConfigEntry
+
 from .const import CONF_BASE_URL, DOMAIN
 from .coordinator import ForecastSolarDataUpdateCoordinator
 
@@ -132,7 +133,7 @@ SENSORS: tuple[ForecastSolarSensorEntityDescription, ...] = (
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ForecastSolarConfigEntry,
+    entry: ConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up FC Lokal sensors."""
@@ -170,7 +171,7 @@ class ForecastSolarSensorEntity(
             entry_type=DeviceEntryType.SERVICE,
             identifiers={(DOMAIN, entry_id)},
             manufacturer="FC Lokal",
-            model=coordinator.data.account_type.value,
+            model=getattr(getattr(coordinator.data, "account_type", None), "value", "custom"),
             name="FC Lokal solar forecast",
             configuration_url=coordinator.config_entry.options.get(CONF_BASE_URL)
             or "https://forecast.solar",

@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.diagnostics import async_redact_data
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_API_KEY, CONF_LATITUDE, CONF_LONGITUDE
 from homeassistant.core import HomeAssistant
 
-from . import ForecastSolarConfigEntry
 from .const import CONF_BASE_URL
 
 TO_REDACT = {
@@ -20,7 +20,7 @@ TO_REDACT = {
 
 
 async def async_get_config_entry_diagnostics(
-    hass: HomeAssistant, entry: ForecastSolarConfigEntry
+    hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
     coordinator = entry.runtime_data
@@ -58,8 +58,8 @@ async def async_get_config_entry_diagnostics(
             },
         },
         "account": {
-            "type": coordinator.data.account_type.value,
-            "rate_limit": coordinator.data.api_rate_limit,
-            "timezone": coordinator.data.timezone,
+            "type": getattr(getattr(coordinator.data, "account_type", None), "value", None),
+            "rate_limit": getattr(coordinator.data, "api_rate_limit", None),
+            "timezone": getattr(coordinator.data, "timezone", None),
         },
     }
