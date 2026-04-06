@@ -127,7 +127,9 @@ class ForecastSolarDataUpdateCoordinator(DataUpdateCoordinator[Estimate]):
             )
 
         update_interval = timedelta(hours=1)
-        if source_mode == SOURCE_MODE_FORECAST_SOLAR_API and api_key is not None:
+        if source_mode == SOURCE_MODE_CUSTOM_API:
+            update_interval = timedelta(minutes=15)
+        elif api_key is not None:
             update_interval = timedelta(minutes=30)
 
         LOGGER.debug(
