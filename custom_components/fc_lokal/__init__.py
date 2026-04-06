@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_API_KEY, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
@@ -19,14 +20,11 @@ from .const import (
     DOMAIN,
     SOURCE_MODE_FORECAST_SOLAR_API,
 )
-from .coordinator import ForecastSolarConfigEntry, ForecastSolarDataUpdateCoordinator
 
 PLATFORMS = [Platform.SENSOR]
 
 
-async def async_migrate_entry(
-    hass: HomeAssistant, entry: ForecastSolarConfigEntry
-) -> bool:
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate old config entry."""
     if entry.version == 1:
         new_data = dict(entry.data)
@@ -67,10 +65,10 @@ async def async_migrate_entry(
     return True
 
 
-async def async_setup_entry(
-    hass: HomeAssistant, entry: ForecastSolarConfigEntry
-) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up FC Lokal from a config entry."""
+    from .coordinator import ForecastSolarDataUpdateCoordinator
+
     plane_configs = get_plane_configs(entry)
     if not plane_configs:
         raise ConfigEntryError(translation_domain=DOMAIN, translation_key="no_plane")
@@ -97,15 +95,11 @@ async def async_setup_entry(
     return True
 
 
-async def _async_update_listener(
-    hass: HomeAssistant, entry: ForecastSolarConfigEntry
-) -> None:
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle config entry updates."""
     hass.config_entries.async_schedule_reload(entry.entry_id)
 
 
-async def async_unload_entry(
-    hass: HomeAssistant, entry: ForecastSolarConfigEntry
-) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
