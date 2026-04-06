@@ -177,10 +177,13 @@ class ForecastEngine:
         """Convert weather forecasts into combined AC power per timestamp."""
         combined: dict[datetime, float] = {}
         now = datetime.now(ZoneInfo(site.timezone))
+        start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
         for plane, forecast_points in zip(site.planes, plane_forecasts, strict=True):
             for point in forecast_points:
-                if point.timestamp < now.replace(minute=0, second=0, microsecond=0):
+                # Keep the current day's earlier slots so HA charts do not drop the
+                # already reached forecast line/bar as the day progresses.
+                if point.timestamp < start_of_today:
                     continue
 
                 gti = max(point.global_tilted_irradiance, 0.0)
