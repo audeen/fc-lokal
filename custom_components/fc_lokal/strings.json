@@ -1,0 +1,118 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "azimuth": "Azimuth (360 degrees, 0 = North, 90 = East, 180 = South, 270 = West)",
+          "declination": "Declination (0 = Horizontal, 90 = Vertical)",
+          "latitude": "[%key:common::config_flow::data::latitude%]",
+          "longitude": "[%key:common::config_flow::data::longitude%]",
+          "modules_power": "Total Watt peak power of your solar modules",
+          "name": "[%key:common::config_flow::data::name%]"
+        },
+        "description": "Fill in the data of your solar panels. Please refer to the documentation if a field is unclear."
+      }
+    },
+    "error": {
+      "invalid_api_key": "The API key must contain exactly 16 alphanumeric characters.",
+      "invalid_base_url": "The base URL is not a valid URL."
+    }
+  },
+  "config_subentries": {
+    "plane": {
+      "abort": {
+        "api_key_required": "An API key is required to add more than one plane when using the Forecast.Solar API.",
+        "max_planes": "The maximum number of planes has been reached.",
+        "reconfigure_successful": "Plane updated successfully."
+      },
+      "step": {
+        "user": {
+          "data": {
+            "azimuth": "Azimuth (360 degrees, 0 = North, 90 = East, 180 = South, 270 = West)",
+            "declination": "Declination (0 = Horizontal, 90 = Vertical)",
+            "modules_power": "Total Watt peak power of your solar modules"
+          }
+        },
+        "reconfigure": {
+          "data": {
+            "azimuth": "Azimuth (360 degrees, 0 = North, 90 = East, 180 = South, 270 = West)",
+            "declination": "Declination (0 = Horizontal, 90 = Vertical)",
+            "modules_power": "Total Watt peak power of your solar modules"
+          }
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "actual_sensor_entity_id": "Actual yield sensor entity",
+          "api_key": "API key",
+          "base_url": "Custom API base URL",
+          "damping_evening": "Damping evening",
+          "damping_morning": "Damping morning",
+          "inverter_size": "Inverter size (W)",
+          "request_timeout": "Request timeout (seconds)",
+          "source_mode": "Source mode",
+          "use_live_actual": "Pass live actual value to custom API"
+        }
+      }
+    },
+    "error": {
+      "actual_sensor_entity_id_required": "An entity must be selected when live actual is enabled.",
+      "api_key_required": "An API key is required for multiple planes when using the Forecast.Solar API.",
+      "base_url_required": "A base URL is required when using a custom API.",
+      "invalid_api_key": "The API key must contain exactly 16 alphanumeric characters.",
+      "invalid_base_url": "The base URL is not a valid URL."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "energy_current_hour": {
+        "name": "Energy current hour"
+      },
+      "energy_next_hour": {
+        "name": "Energy next hour"
+      },
+      "energy_production_today": {
+        "name": "Energy production today"
+      },
+      "energy_production_today_remaining": {
+        "name": "Energy production today remaining"
+      },
+      "energy_production_tomorrow": {
+        "name": "Energy production tomorrow"
+      },
+      "power_highest_peak_time_today": {
+        "name": "Power highest peak time today"
+      },
+      "power_highest_peak_time_tomorrow": {
+        "name": "Power highest peak time tomorrow"
+      },
+      "power_production_next_12hours": {
+        "name": "Power production in 12 hours"
+      },
+      "power_production_next_24hours": {
+        "name": "Power production in 24 hours"
+      },
+      "power_production_next_hour": {
+        "name": "Power production next hour"
+      },
+      "power_production_now": {
+        "name": "Power production now"
+      }
+    }
+  },
+  "exceptions": {
+    "api_key_required": {
+      "message": "An API key is required for multiple planes when using the Forecast.Solar API."
+    },
+    "base_url_required": {
+      "message": "A base URL is required when using the custom API."
+    },
+    "no_plane": {
+      "message": "At least one plane must be configured."
+    }
+  }
+}

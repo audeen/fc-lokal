@@ -1,0 +1,12 @@
+{
+  "domain": "fc_lokal",
+  "name": "FC Lokal",
+  "version": "0.2.0",
+  "codeowners": ["@klaasnicolaas", "@frenck"],
+  "config_flow": true,
+  "documentation": "https://github.com/YOUR_GITHUB_USER/FC_HA",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/YOUR_GITHUB_USER/FC_HA/issues",
+  "requirements": ["forecast-solar==5.0.0"]
+}
