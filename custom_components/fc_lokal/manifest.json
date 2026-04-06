@@ -1,7 +1,7 @@
 {
   "domain": "fc_lokal",
   "name": "FC Lokal",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "codeowners": [
     "@klaasnicolaas",
     "@frenck"

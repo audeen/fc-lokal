@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Protocol
 
-from forecast_solar import Estimate, ForecastSolar, ForecastSolarConnectionError, Plane
+from forecast_solar import Estimate, ForecastSolar, ForecastSolarConnectionError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_API_KEY, CONF_LATITUDE, CONF_LONGITUDE
 from homeassistant.core import HomeAssistant
@@ -39,6 +39,11 @@ from .const import (
     SOURCE_MODE_FORECAST_SOLAR_API,
 )
 
+try:
+    from forecast_solar import Plane as ForecastSolarPlane
+except ImportError:
+    ForecastSolarPlane = None
+
 
 class ForecastProvider(Protocol):
     """Protocol shared by cloud and custom providers."""
@@ -65,14 +70,24 @@ class ForecastSolarDataUpdateCoordinator(DataUpdateCoordinator[Estimate]):
 
         plane_configs = get_plane_configs(entry)
         main_plane = plane_configs[0]
-        planes: list[Plane] = [
-            Plane(
-                declination=plane_config[CONF_DECLINATION],
-                azimuth=(plane_config[CONF_AZIMUTH] - 180),
-                kwp=(plane_config[CONF_MODULES_POWER] / 1000),
-            )
+        extra_plane_dicts = [
+            {
+                "declination": plane_config[CONF_DECLINATION],
+                "azimuth": (plane_config[CONF_AZIMUTH] - 180),
+                "kwp": (plane_config[CONF_MODULES_POWER] / 1000),
+            }
             for plane_config in plane_configs[1:]
         ]
+        forecast_solar_planes = []
+        if ForecastSolarPlane is not None:
+            forecast_solar_planes = [
+                ForecastSolarPlane(**plane_config) for plane_config in extra_plane_dicts
+            ]
+        elif extra_plane_dicts:
+            LOGGER.warning(
+                "Installed forecast_solar package does not expose Plane; "
+                "additional planes are only forwarded in custom_api mode"
+            )
 
         session = async_get_clientsession(hass)
         if source_mode == SOURCE_MODE_CUSTOM_API:
@@ -93,14 +108,7 @@ class ForecastSolarDataUpdateCoordinator(DataUpdateCoordinator[Estimate]):
                         CONF_DAMPING_EVENING, DEFAULT_DAMPING
                     ),
                     inverter=inverter_size,
-                    planes=[
-                        {
-                            "declination": plane.declination,
-                            "azimuth": plane.azimuth,
-                            "kwp": plane.kwp,
-                        }
-                        for plane in planes
-                    ],
+                    planes=extra_plane_dicts,
                 ),
             )
         else:
@@ -115,7 +123,7 @@ class ForecastSolarDataUpdateCoordinator(DataUpdateCoordinator[Estimate]):
                 damping_morning=entry.options.get(CONF_DAMPING_MORNING, DEFAULT_DAMPING),
                 damping_evening=entry.options.get(CONF_DAMPING_EVENING, DEFAULT_DAMPING),
                 inverter=inverter_size,
-                planes=planes,
+                planes=forecast_solar_planes,
             )
 
         update_interval = timedelta(hours=1)
