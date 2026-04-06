@@ -10,7 +10,7 @@
   "documentation": "https://github.com/audeen/fc-lokal",
   "integration_type": "service",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/audeen/fc-lokalissues",
+  "issue_tracker": "https://github.com/audeen/fc-lokal/issues",
   "requirements": [
     "forecast-solar==5.0.0"
   ]
