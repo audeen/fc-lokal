@@ -20,6 +20,7 @@ class HomeAssistantSensors:
     inverter_power_entity_id: str | None = None
     grid_power_entity_id: str | None = None
     battery_power_entity_id: str | None = None
+    battery_soc_entity_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -85,6 +86,8 @@ class EngineConfig:
     daily_energy_weight: float = 0.45
     low_light_threshold_wm2: float = 10.0
     temperature_coefficient_per_c: float = 0.004
+    battery_full_soc_threshold: float = 98.0
+    limit_when_battery_full_watts: float | None = None
 
 
 @dataclass(slots=True)
@@ -141,6 +144,7 @@ def load_config(path: str | Path) -> AppConfig:
             battery_power_entity_id=_strip_or_none(
                 sensors_raw.get("battery_power_entity_id")
             ),
+            battery_soc_entity_id=_strip_or_none(sensors_raw.get("battery_soc_entity_id")),
         ),
         interpretation=HomeAssistantInterpretation(
             battery_power_sign=str(
@@ -191,6 +195,12 @@ def load_config(path: str | Path) -> AppConfig:
             ),
             temperature_coefficient_per_c=float(
                 engine_raw.get("temperature_coefficient_per_c", 0.004)
+            ),
+            battery_full_soc_threshold=float(
+                engine_raw.get("battery_full_soc_threshold", 98.0)
+            ),
+            limit_when_battery_full_watts=_float_or_none(
+                engine_raw.get("limit_when_battery_full_watts")
             ),
         ),
     )

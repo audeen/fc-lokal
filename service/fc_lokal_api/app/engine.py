@@ -66,9 +66,13 @@ class ForecastEngine:
             site=site,
             timezone=site.timezone,
         )
+        effective_total_limit_watts = self._effective_total_limit_watts(
+            site=site,
+            live_inputs=live_inputs,
+        )
         limited = self._apply_total_limit(
             timestamps_to_power=adjusted,
-            total_limit_watts=site.effective_total_limit_watts(),
+            total_limit_watts=effective_total_limit_watts,
         )
         return self._to_forecast_solar_payload(
             timestamps_to_power=limited,
@@ -96,6 +100,10 @@ class ForecastEngine:
                     self._resolve_live_pv_power(
                         live_inputs=raw_live_inputs,
                         site=self._config.site,
+                        total_limit_watts=self._effective_total_limit_watts(
+                            site=self._config.site,
+                            live_inputs=raw_live_inputs,
+                        ),
                     )
                 )
                 live_inputs = {
@@ -104,11 +112,16 @@ class ForecastEngine:
                     "inverter_power_watts": raw_live_inputs.inverter_power_watts,
                     "grid_power_watts": raw_live_inputs.grid_power_watts,
                     "battery_power_watts": raw_live_inputs.battery_power_watts,
+                    "battery_soc_percent": raw_live_inputs.battery_soc_percent,
                     "effective_live_pv_power_watts": live_power,
                     "effective_live_pv_source": power_source,
                     "battery_charge_watts": battery_charge,
                     "grid_import_watts": grid_import,
                     "grid_export_watts": grid_export,
+                    "effective_total_limit_watts": self._effective_total_limit_watts(
+                        site=self._config.site,
+                        live_inputs=raw_live_inputs,
+                    ),
                 }
             except Exception as err:  # noqa: BLE001
                 live_inputs = {"error": str(err)}
@@ -331,7 +344,12 @@ class ForecastEngine:
         tz = ZoneInfo(timezone)
         now = datetime.now(tz)
         current_hour = now.replace(minute=0, second=0, microsecond=0)
-        debug.applied_total_limit_watts = site.effective_total_limit_watts()
+        effective_total_limit_watts = self._effective_total_limit_watts(
+            site=site,
+            live_inputs=live_inputs,
+        )
+        debug.applied_total_limit_watts = effective_total_limit_watts
+        debug.battery_soc_percent = live_inputs.battery_soc_percent
 
         modeled_power_now = timestamps_to_power.get(current_hour)
         debug.modeled_power_now_watts = modeled_power_now
@@ -349,7 +367,11 @@ class ForecastEngine:
             battery_charge_watts,
             grid_import_watts,
             grid_export_watts,
-        ) = self._resolve_live_pv_power(live_inputs=live_inputs, site=site)
+        ) = self._resolve_live_pv_power(
+            live_inputs=live_inputs,
+            site=site,
+            total_limit_watts=effective_total_limit_watts,
+        )
         debug.effective_live_pv_power_watts = effective_live_pv_power
         debug.effective_live_pv_source = effective_live_pv_source
         debug.battery_charge_watts = battery_charge_watts
@@ -381,7 +403,12 @@ class ForecastEngine:
         debug.blended_scale = sum(scale * weight for scale, weight in weighted_scales) / total_weight
 
         adjusted = {
-            timestamp: max(power * debug.blended_scale, 0.0)
+            # Keep historical slots untouched; only adapt the newest forecast horizon.
+            timestamp: (
+                max(power * debug.blended_scale, 0.0)
+                if timestamp >= current_hour
+                else power
+            )
             for timestamp, power in timestamps_to_power.items()
         }
         return (adjusted, debug)
@@ -517,6 +544,7 @@ class ForecastEngine:
         *,
         live_inputs: LiveInputs,
         site: SiteConfig,
+        total_limit_watts: float | None,
     ) -> tuple[float | None, str | None, float | None, float | None, float | None]:
         """Resolve the best available current PV power estimate from live sensors."""
         battery_charge_watts = self._battery_charge_watts(live_inputs.battery_power_watts)
@@ -535,9 +563,8 @@ class ForecastEngine:
 
         if live_inputs.pv_power_watts is not None:
             effective_pv_power = max(live_inputs.pv_power_watts, 0.0)
-            total_limit = site.effective_total_limit_watts()
-            if total_limit is not None:
-                effective_pv_power = min(effective_pv_power, total_limit)
+            if total_limit_watts is not None:
+                effective_pv_power = min(effective_pv_power, total_limit_watts)
             return (
                 effective_pv_power,
                 "pv_power_sensor",
@@ -583,9 +610,8 @@ class ForecastEngine:
             )
 
         inferred_pv_power = sum(components)
-        total_limit = site.effective_total_limit_watts()
-        if total_limit is not None:
-            inferred_pv_power = min(inferred_pv_power, total_limit)
+        if total_limit_watts is not None:
+            inferred_pv_power = min(inferred_pv_power, total_limit_watts)
         source = (
             "inverter_plus_battery"
             if battery_charge_from_pv_watts not in {None, 0.0}
@@ -598,6 +624,23 @@ class ForecastEngine:
             grid_import_watts,
             grid_export_watts,
         )
+
+    def _effective_total_limit_watts(
+        self,
+        *,
+        site: SiteConfig,
+        live_inputs: LiveInputs,
+    ) -> float | None:
+        """Resolve dynamic clipping limit based on battery state and config."""
+        base_limit = site.effective_total_limit_watts()
+        soc = live_inputs.battery_soc_percent
+        full_threshold = self._config.engine.battery_full_soc_threshold
+        full_limit = self._config.engine.limit_when_battery_full_watts
+        if full_limit is None or soc is None or soc < full_threshold:
+            return base_limit
+        if base_limit is None:
+            return full_limit
+        return min(base_limit, full_limit)
 
     def _battery_charge_watts(self, battery_power_watts: float | None) -> float | None:
         """Normalize the configured battery power sensor to charge watts."""

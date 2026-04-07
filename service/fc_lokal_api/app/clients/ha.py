@@ -31,12 +31,14 @@ class HomeAssistantClient:
             inverter_power_watts,
             grid_power_watts,
             battery_power_watts,
+            battery_soc_percent,
         ) = await asyncio.gather(
             self._read_power_sensor_safe(sensors.pv_power_entity_id),
             self._read_energy_sensor_safe(sensors.pv_energy_today_entity_id),
             self._read_power_sensor_safe(sensors.inverter_power_entity_id),
             self._read_power_sensor_safe(sensors.grid_power_entity_id),
             self._read_power_sensor_safe(sensors.battery_power_entity_id),
+            self._read_percent_sensor_safe(sensors.battery_soc_entity_id),
         )
         return LiveInputs(
             pv_power_watts=pv_power_watts,
@@ -44,6 +46,7 @@ class HomeAssistantClient:
             inverter_power_watts=inverter_power_watts,
             grid_power_watts=grid_power_watts,
             battery_power_watts=battery_power_watts,
+            battery_soc_percent=battery_soc_percent,
         )
 
     async def fetch_state(self, entity_id: str) -> dict[str, Any] | None:
@@ -104,6 +107,34 @@ class HomeAssistantClient:
         except httpx.HTTPError as err:
             LOGGER.warning(
                 "Home Assistant energy sensor request errored for %s: %s",
+                entity_id,
+                err,
+            )
+        return None
+
+    async def _read_percent_sensor(self, entity_id: str | None) -> float | None:
+        """Read a percentage-like sensor and normalize to 0..100 when possible."""
+        if not entity_id:
+            return None
+        state = await self.fetch_state(entity_id)
+        value = self._parse_numeric_state(state)
+        if value is None:
+            return None
+        return max(0.0, min(value, 100.0))
+
+    async def _read_percent_sensor_safe(self, entity_id: str | None) -> float | None:
+        """Read a percent sensor, but do not fail the whole forecast on API issues."""
+        try:
+            return await self._read_percent_sensor(entity_id)
+        except httpx.HTTPStatusError as err:
+            LOGGER.warning(
+                "Home Assistant percent sensor request failed for %s: %s",
+                entity_id,
+                err,
+            )
+        except httpx.HTTPError as err:
+            LOGGER.warning(
+                "Home Assistant percent sensor request errored for %s: %s",
                 entity_id,
                 err,
             )

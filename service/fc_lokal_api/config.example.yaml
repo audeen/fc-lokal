@@ -22,6 +22,8 @@ home_assistant:
     inverter_power_entity_id: sensor.solakon_one_active_power
     grid_power_entity_id: sensor.shellypro3em_ac15187c6ea4_total_active_power
     battery_power_entity_id: sensor.solakon_one_battery_combined_power
+    # Optional battery SoC for dynamic clipping at high charge states (0..100)
+    battery_soc_entity_id: sensor.solakon_one_battery_soc
   interpretation:
     battery_power_sign: negative_is_charging
     grid_power_sign: positive_is_import
@@ -51,3 +53,6 @@ engine:
   daily_energy_weight: 0.45
   low_light_threshold_wm2: 10
   temperature_coefficient_per_c: 0.004
+  # Optional: when battery SoC is high, clip forecast to this lower export-like cap
+  battery_full_soc_threshold: 98
+  limit_when_battery_full_watts: 1300

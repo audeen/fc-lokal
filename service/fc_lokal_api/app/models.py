@@ -94,6 +94,7 @@ class LiveInputs:
     inverter_power_watts: float | None = None
     grid_power_watts: float | None = None
     battery_power_watts: float | None = None
+    battery_soc_percent: float | None = None
 
 
 @dataclass(slots=True)
@@ -135,4 +136,5 @@ class ForecastDebugInfo:
     live_power_scale: float | None = None
     live_energy_scale: float | None = None
     applied_total_limit_watts: float | None = None
+    battery_soc_percent: float | None = None
     blended_scale: float = 1.0

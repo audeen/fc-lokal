@@ -113,6 +113,24 @@ This means:
 - positive grid power values are treated as import
 - battery charge power is assumed to come from PV, not from the grid
 
+### Battery-full clipping (optional)
+
+If your storage can fill up and then clamp PV export, you can configure an additional
+SoC-based clipping rule. When the battery SoC is above a threshold, the forecast is
+clipped to a lower limit (for example your grid/export limit):
+
+```yaml
+home_assistant:
+  sensors:
+    battery_soc_entity_id: sensor.solakon_one_battery_soc
+
+engine:
+  battery_full_soc_threshold: 98
+  limit_when_battery_full_watts: 1300
+```
+
+Without `battery_soc_entity_id`, this dynamic clipping rule is ignored.
+
 ## PVGIS calibration
 
 The service can pre-calibrate the Open-Meteo curve with PVGIS before the Home Assistant
@@ -134,3 +152,9 @@ engine:
 
 `GET /health` now also reports `pvgis_calibration` debug data with the current blended
 factor, rough expected PVGIS day energy, and whether the pre-calibration was active.
+
+## Live correction behavior
+
+The Home Assistant live correction scales only the current and future forecast slots.
+Historical slots of the current day are kept unchanged, which makes chart history easier
+to interpret during intraday updates.
