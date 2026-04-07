@@ -8,10 +8,10 @@ import time
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 
 from .clients.ha import HomeAssistantClient
-from .clients.open_meteo import OpenMeteoClient
+from .clients.open_meteo import OpenMeteoClient, OpenMeteoClientError
 from .clients.pvgis import PVGISClient
 from .config import AppConfig, load_config
 from .engine import ForecastEngine
@@ -107,7 +107,13 @@ async def estimate(
         inverter_kw=inverter,
         extra_planes=_parse_extra_planes(request),
     )
-    result = await app.state.engine.build_estimate(estimate_request)
+    try:
+        result = await app.state.engine.build_estimate(estimate_request)
+    except OpenMeteoClientError as err:
+        raise HTTPException(
+            status_code=503,
+            detail=str(err),
+        ) from err
     tz = app.state.config.site.timezone
     summary = summarize_estimate_payload(result, timezone=tz)
     app.state.last_estimate_meta = {"unix_time": time.time(), **summary}

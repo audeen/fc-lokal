@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -9,6 +11,12 @@ import httpx
 
 from ..config import OpenMeteoConfig
 from ..models import PlaneConfig, SiteConfig, WeatherPoint
+
+LOGGER = logging.getLogger(__name__)
+
+
+class OpenMeteoClientError(Exception):
+    """Raised when Open-Meteo data cannot be fetched reliably."""
 
 
 class OpenMeteoClient:
@@ -35,12 +43,7 @@ class OpenMeteoClient:
         if self._config.model and self._config.model != "best_match":
             params["models"] = self._config.model
 
-        response = await self._http.get(
-            self._config.base_url,
-            params=params,
-            timeout=self._config.timeout_seconds,
-        )
-        response.raise_for_status()
+        response = await self._request_with_retry(params=params)
         payload = response.json()
 
         hourly = payload["hourly"]
@@ -64,6 +67,61 @@ class OpenMeteoClient:
                 zip(hourly["time"], hourly["global_tilted_irradiance"], strict=True)
             )
         ]
+
+    async def _request_with_retry(self, *, params: dict[str, object]) -> httpx.Response:
+        """Call Open-Meteo with short retries for transient failures."""
+        max_attempts = 3
+        retry_delays = (0.4, 1.2)
+        last_error: Exception | None = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = await self._http.get(
+                    self._config.base_url,
+                    params=params,
+                    timeout=self._config.timeout_seconds,
+                )
+                response.raise_for_status()
+                return response
+            except httpx.TimeoutException as err:
+                last_error = err
+                should_retry = attempt < max_attempts
+                LOGGER.warning(
+                    "Open-Meteo timeout on attempt %s/%s (%s)",
+                    attempt,
+                    max_attempts,
+                    "retrying" if should_retry else "giving up",
+                )
+            except httpx.HTTPStatusError as err:
+                last_error = err
+                status = err.response.status_code if err.response is not None else None
+                should_retry = attempt < max_attempts and status is not None and status >= 500
+                LOGGER.warning(
+                    "Open-Meteo returned HTTP %s on attempt %s/%s (%s)",
+                    status,
+                    attempt,
+                    max_attempts,
+                    "retrying" if should_retry else "giving up",
+                )
+                if not should_retry:
+                    break
+            except httpx.HTTPError as err:
+                last_error = err
+                should_retry = attempt < max_attempts
+                LOGGER.warning(
+                    "Open-Meteo transport error on attempt %s/%s (%s): %s",
+                    attempt,
+                    max_attempts,
+                    "retrying" if should_retry else "giving up",
+                    err,
+                )
+
+            if attempt < max_attempts:
+                await asyncio.sleep(retry_delays[attempt - 1])
+
+        raise OpenMeteoClientError(
+            "Open-Meteo is temporarily unavailable"
+        ) from last_error
 
 
 def _parse_local_time(value: str, timezone: ZoneInfo) -> datetime:

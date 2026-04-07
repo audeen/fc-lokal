@@ -4,3 +4,4 @@ config/
 *.tmp
 .venv/
 service/fc_lokal_api/data/config.yaml
+compose.yaml
