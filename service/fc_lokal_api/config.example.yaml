@@ -5,6 +5,7 @@ site:
   grid_output_limit_watts: 1200
   battery_charge_limit_watts: 2600
   system_total_limit_watts: 2600
+  battery_capacity_kwh: 6.33
   planes:
     - name: main_roof
       declination: 25
@@ -53,6 +54,7 @@ engine:
   daily_energy_weight: 0.45
   low_light_threshold_wm2: 10
   temperature_coefficient_per_c: 0.004
-  # Optional: when battery SoC is high, clip forecast to this lower export-like cap
+  # Legacy reactive battery-full clipping. Ignored when site.battery_capacity_kwh
+  # is set, because the per-hour battery simulation handles clipping then.
   battery_full_soc_threshold: 98
-  limit_when_battery_full_watts: 1300
+  limit_when_battery_full_watts: 1200

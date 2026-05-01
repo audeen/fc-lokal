@@ -42,6 +42,7 @@ class SiteConfig:
     grid_output_limit_watts: float | None = None
     battery_charge_limit_watts: float | None = None
     system_total_limit_watts: float | None = None
+    battery_capacity_kwh: float | None = None
 
     def has_site_limits(self) -> bool:
         """Return whether site-level hardware limits are configured."""

@@ -87,6 +87,7 @@ The example config separates three different hardware limits:
 - `grid_output_limit_watts`: maximum AC power delivered to the house/grid
 - `battery_charge_limit_watts`: maximum battery charge power
 - `system_total_limit_watts`: maximum total PV production that should clip the forecast
+- `battery_capacity_kwh`: usable battery capacity in kWh (informational, exposed via `/health`)
 
 For your described setup, a good starting point is:
 
@@ -95,6 +96,7 @@ site:
   grid_output_limit_watts: 1200
   battery_charge_limit_watts: 2600
   system_total_limit_watts: 2600
+  battery_capacity_kwh: 6.33
 ```
 
 The Home Assistant sensor interpretation is also configurable:
@@ -113,23 +115,55 @@ This means:
 - positive grid power values are treated as import
 - battery charge power is assumed to come from PV, not from the grid
 
-### Battery-full clipping (optional)
+### Battery-aware forecast clipping (recommended)
 
-If your storage can fill up and then clamp PV export, you can configure an additional
-SoC-based clipping rule. When the battery SoC is above a threshold, the forecast is
-clipped to a lower limit (for example your grid/export limit):
+For a DC-coupled storage (PV charges the battery directly, AC output is bounded by the
+inverter) the forecast must drop to the inverter AC limit once the battery is full. The
+service simulates this hour by hour for every future slot:
+
+- starts today at the live `battery_soc_percent` and the configured
+  `site.battery_capacity_kwh`
+- per future hour:
+  - PV up to `site.grid_output_limit_watts` flows out via the inverter
+  - the remaining PV charges the battery up to `site.battery_charge_limit_watts`
+    and the remaining free capacity
+  - if the battery would overflow, the forecast slot is clipped to whatever can
+    actually be used (`grid_output_limit_watts` plus the last drop of charging
+    headroom)
+- following days are assumed to start with an empty battery (0 %), since
+  overnight house consumption is not modeled
+
+Required configuration:
 
 ```yaml
+site:
+  battery_capacity_kwh: 6.33
+  grid_output_limit_watts: 1200
+  battery_charge_limit_watts: 2600
+
 home_assistant:
   sensors:
     battery_soc_entity_id: sensor.solakon_one_battery_soc
-
-engine:
-  battery_full_soc_threshold: 98
-  limit_when_battery_full_watts: 1300
 ```
 
-Without `battery_soc_entity_id`, this dynamic clipping rule is ignored.
+`GET /health` exposes a `battery_simulation` block with the starting SoC, the remaining
+free capacity now, the predicted `first_full_hour` for today, and how many forecast
+slots were clipped.
+
+### Legacy battery-full clipping (fallback)
+
+If `site.battery_capacity_kwh` is **not** set, the service falls back to a simpler
+reactive rule: when the live `battery_soc_percent` is above a threshold, the whole
+forecast curve is clipped to a lower cap.
+
+```yaml
+engine:
+  battery_full_soc_threshold: 98
+  limit_when_battery_full_watts: 1200
+```
+
+Without both `battery_soc_entity_id` and either of the two mechanisms above, no
+battery-aware clipping happens at all.
 
 ## PVGIS calibration
 
@@ -158,3 +192,12 @@ factor, rough expected PVGIS day energy, and whether the pre-calibration was act
 The Home Assistant live correction scales only the current and future forecast slots.
 Historical slots of the current day are kept unchanged, which makes chart history easier
 to interpret during intraday updates.
+
+## Frozen forecast history
+
+To keep the Home Assistant energy diagram stable across forecast updates, the service
+caches the very first watt value it emits for each past hourly slot. Subsequent calls
+re-publish that exact same value for any timestamp that is already in the past, even if
+the underlying Open-Meteo hindcast or the PVGIS calibration shifts in the meantime. Only
+the current and future slots get re-modeled. The cache is process-local and is rebuilt
+on container restart.

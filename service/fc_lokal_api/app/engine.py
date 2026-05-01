@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -41,6 +41,10 @@ class ForecastEngine:
         self._weather_client = weather_client
         self._ha_client = ha_client
         self._pvgis_client = pvgis_client
+        # Cache of already-emitted forecast values for past hours. Once a slot is
+        # in the past we never re-publish a different value for it, so the HA
+        # energy chart history stays stable across forecast updates.
+        self._frozen_history_watts: dict[datetime, float] = {}
 
     async def build_estimate(self, request: EstimateRequest) -> dict[str, Any]:
         """Build a Forecast.Solar-compatible estimate payload."""
@@ -74,8 +78,18 @@ class ForecastEngine:
             timestamps_to_power=adjusted,
             total_limit_watts=effective_total_limit_watts,
         )
-        return self._to_forecast_solar_payload(
+        battery_simulated, _battery_debug = self._apply_battery_simulation(
             timestamps_to_power=limited,
+            live_inputs=live_inputs,
+            site=site,
+            timezone=site.timezone,
+        )
+        frozen = self._freeze_history(
+            timestamps_to_power=battery_simulated,
+            timezone=site.timezone,
+        )
+        return self._to_forecast_solar_payload(
+            timestamps_to_power=frozen,
             timezone=site.timezone,
         )
 
@@ -84,6 +98,7 @@ class ForecastEngine:
         baseline = None
         live_inputs = None
         pvgis_calibration = await self._build_health_pvgis_calibration()
+        battery_simulation = await self._build_health_battery_simulation()
         if self._pvgis_client and self._config.pvgis.enabled:
             try:
                 baseline = await self._pvgis_client.fetch_baseline(
@@ -136,10 +151,12 @@ class ForecastEngine:
                 "grid_output_limit_watts": self._config.site.grid_output_limit_watts,
                 "battery_charge_limit_watts": self._config.site.battery_charge_limit_watts,
                 "system_total_limit_watts": self._config.site.system_total_limit_watts,
+                "battery_capacity_kwh": self._config.site.battery_capacity_kwh,
             },
             "live_inputs": live_inputs,
             "pvgis_sample": baseline,
             "pvgis_calibration": pvgis_calibration,
+            "battery_simulation": battery_simulation,
         }
 
     async def _fetch_live_inputs(self, request: EstimateRequest) -> LiveInputs:
@@ -197,6 +214,7 @@ class ForecastEngine:
             ),
             battery_charge_limit_watts=self._config.site.battery_charge_limit_watts,
             system_total_limit_watts=self._config.site.system_total_limit_watts,
+            battery_capacity_kwh=self._config.site.battery_capacity_kwh,
         )
 
     def _combine_plane_forecasts(
@@ -436,6 +454,249 @@ class ForecastEngine:
             for timestamp, power in timestamps_to_power.items()
         }
 
+    def _apply_battery_simulation(
+        self,
+        *,
+        timestamps_to_power: dict[datetime, float],
+        live_inputs: LiveInputs,
+        site: SiteConfig,
+        timezone: str,
+    ) -> tuple[dict[datetime, float], dict[str, Any]]:
+        """Clip future hours to the inverter AC limit once the battery is full.
+
+        For every future hourly slot we walk the predicted state of charge
+        forward. As long as the battery still has free capacity, the full
+        forecast value passes through. Once the battery would be full at the
+        start of an hour, the slot is clipped to ``grid_output_limit_watts``
+        (the inverter AC limit) because no more PV energy can be absorbed by
+        DC charging.
+
+        Today starts at the live ``battery_soc_percent``. Following days start
+        empty (0 %) since we do not model overnight house consumption.
+        """
+        debug: dict[str, Any] = {
+            "active": False,
+            "reason": None,
+            "battery_capacity_kwh": site.battery_capacity_kwh,
+            "starting_soc_percent": live_inputs.battery_soc_percent,
+            "grid_output_limit_watts": site.grid_output_limit_watts,
+            "battery_charge_limit_watts": site.battery_charge_limit_watts,
+            "first_full_hour": None,
+            "clipped_slot_count": 0,
+        }
+
+        if not timestamps_to_power:
+            debug["reason"] = "no_forecast_slots"
+            return timestamps_to_power, debug
+
+        capacity_kwh = site.battery_capacity_kwh
+        if capacity_kwh is None or capacity_kwh <= 0:
+            debug["reason"] = "battery_capacity_kwh_missing"
+            return timestamps_to_power, debug
+
+        ac_limit_watts = site.grid_output_limit_watts
+        if ac_limit_watts is None or ac_limit_watts <= 0:
+            debug["reason"] = "grid_output_limit_watts_missing"
+            return timestamps_to_power, debug
+
+        charge_limit_watts = (
+            site.battery_charge_limit_watts
+            if site.battery_charge_limit_watts is not None
+            and site.battery_charge_limit_watts > 0
+            else float("inf")
+        )
+
+        tz = ZoneInfo(timezone)
+        now = datetime.now(tz)
+        current_hour = now.replace(minute=0, second=0, microsecond=0)
+        today = now.date()
+
+        capacity_wh = capacity_kwh * 1000.0
+
+        # Starting SoC per local day.
+        starting_soc: dict[date, float] = {}
+        if live_inputs.battery_soc_percent is not None:
+            starting_soc[today] = max(
+                0.0, min(100.0, live_inputs.battery_soc_percent)
+            )
+        else:
+            # Without a live SoC the simulation cannot start today; bail out
+            # to keep behavior identical to the legacy path.
+            debug["reason"] = "battery_soc_unknown"
+            return timestamps_to_power, debug
+
+        # Group future timestamps by local day in chronological order.
+        per_day_slots: dict[date, list[datetime]] = {}
+        for timestamp in sorted(timestamps_to_power):
+            if timestamp < current_hour:
+                continue
+            local_day = timestamp.astimezone(tz).date()
+            per_day_slots.setdefault(local_day, []).append(timestamp)
+
+        if not per_day_slots:
+            debug["reason"] = "no_future_slots"
+            return timestamps_to_power, debug
+
+        result = dict(timestamps_to_power)
+        debug["active"] = True
+
+        for local_day in sorted(per_day_slots):
+            soc = starting_soc.get(local_day, 0.0)
+            remaining_capacity_wh = max(0.0, (100.0 - soc) / 100.0 * capacity_wh)
+
+            for timestamp in per_day_slots[local_day]:
+                pv_forecast_wh = result[timestamp]  # 1 h slots → W ≈ Wh per slot
+                ac_path_wh = min(pv_forecast_wh, ac_limit_watts)
+                excess_after_ac_wh = max(0.0, pv_forecast_wh - ac_path_wh)
+                dc_path_wh = min(
+                    excess_after_ac_wh,
+                    charge_limit_watts,
+                    remaining_capacity_wh,
+                )
+                actual_pv_used_wh = ac_path_wh + dc_path_wh
+
+                if actual_pv_used_wh < pv_forecast_wh - 1e-6:
+                    result[timestamp] = actual_pv_used_wh
+                    debug["clipped_slot_count"] += 1
+                    if (
+                        debug["first_full_hour"] is None
+                        and local_day == today
+                        and remaining_capacity_wh <= 1e-6
+                    ):
+                        debug["first_full_hour"] = timestamp.isoformat()
+
+                remaining_capacity_wh = max(0.0, remaining_capacity_wh - dc_path_wh)
+                if (
+                    debug["first_full_hour"] is None
+                    and local_day == today
+                    and remaining_capacity_wh <= 1e-6
+                ):
+                    # Battery just hit 100 % — record the next hour boundary
+                    # as the moment clipping kicks in.
+                    next_hour = timestamp + timedelta(hours=1)
+                    debug["first_full_hour"] = next_hour.isoformat()
+
+        return result, debug
+
+    def _freeze_history(
+        self,
+        *,
+        timestamps_to_power: dict[datetime, float],
+        timezone: str,
+    ) -> dict[datetime, float]:
+        """Pin past forecast values so the HA energy chart history is stable.
+
+        Once an hourly slot is in the past, subsequent forecast updates would
+        otherwise rewrite that slot with a freshly modeled value (Open-Meteo
+        hindcast + PVGIS calibration shift between calls). That makes the
+        already-shown history flicker. Instead, we remember the very first
+        value we emit for a given past timestamp and keep returning that.
+        """
+        if not timestamps_to_power:
+            return timestamps_to_power
+
+        tz = ZoneInfo(timezone)
+        now = datetime.now(tz)
+        current_hour = now.replace(minute=0, second=0, microsecond=0)
+
+        result: dict[datetime, float] = {}
+        for timestamp, power in timestamps_to_power.items():
+            if timestamp < current_hour:
+                cached = self._frozen_history_watts.get(timestamp)
+                if cached is None:
+                    self._frozen_history_watts[timestamp] = power
+                    result[timestamp] = power
+                else:
+                    result[timestamp] = cached
+            else:
+                result[timestamp] = power
+
+        self._evict_old_frozen_history(now=now)
+        return result
+
+    def _evict_old_frozen_history(self, *, now: datetime) -> None:
+        """Drop frozen-history entries older than the retention window."""
+        cutoff = now - timedelta(days=2)
+        stale = [ts for ts in self._frozen_history_watts if ts < cutoff]
+        for timestamp in stale:
+            self._frozen_history_watts.pop(timestamp, None)
+
+    async def _build_health_battery_simulation(self) -> dict[str, Any]:
+        """Run a dry-run battery simulation purely for the /health debug view."""
+        site = self._config.site
+        snapshot: dict[str, Any] = {
+            "enabled": site.battery_capacity_kwh is not None,
+            "active": False,
+            "reason": None,
+            "battery_capacity_kwh": site.battery_capacity_kwh,
+            "starting_soc_percent": None,
+            "remaining_capacity_wh_now": None,
+            "first_full_hour": None,
+            "clipped_slot_count": 0,
+            "grid_output_limit_watts": site.grid_output_limit_watts,
+            "battery_charge_limit_watts": site.battery_charge_limit_watts,
+        }
+        if not snapshot["enabled"]:
+            snapshot["reason"] = "battery_capacity_kwh_missing"
+            return snapshot
+
+        live_inputs = LiveInputs()
+        if self._ha_client and self._config.home_assistant.enabled:
+            try:
+                live_inputs = await self._ha_client.fetch_live_inputs()
+            except Exception as err:  # noqa: BLE001
+                snapshot["reason"] = f"live_inputs_error: {err}"
+                return snapshot
+
+        try:
+            plane_forecasts = await asyncio.gather(
+                *[
+                    self._weather_client.fetch_plane_forecast(site=site, plane=plane)
+                    for plane in site.planes
+                ]
+            )
+            modeled = self._combine_plane_forecasts(
+                site=site, plane_forecasts=plane_forecasts
+            )
+            pvgis_adjusted, _ = await self._apply_pvgis_calibration(
+                timestamps_to_power=modeled,
+                site=site,
+                timezone=site.timezone,
+            )
+            adjusted, _ = self._apply_live_correction(
+                timestamps_to_power=pvgis_adjusted,
+                live_inputs=live_inputs,
+                site=site,
+                timezone=site.timezone,
+            )
+            limited = self._apply_total_limit(
+                timestamps_to_power=adjusted,
+                total_limit_watts=self._effective_total_limit_watts(
+                    site=site, live_inputs=live_inputs
+                ),
+            )
+            _, sim_debug = self._apply_battery_simulation(
+                timestamps_to_power=limited,
+                live_inputs=live_inputs,
+                site=site,
+                timezone=site.timezone,
+            )
+        except Exception as err:  # noqa: BLE001
+            LOGGER.warning("Failed to build battery simulation health data: %s", err)
+            snapshot["reason"] = str(err)
+            return snapshot
+
+        snapshot.update(sim_debug)
+        capacity_kwh = site.battery_capacity_kwh
+        soc = live_inputs.battery_soc_percent
+        if capacity_kwh is not None and soc is not None:
+            snapshot["remaining_capacity_wh_now"] = (
+                max(0.0, (100.0 - max(0.0, min(100.0, soc))) / 100.0)
+                * capacity_kwh
+                * 1000.0
+            )
+        return snapshot
+
     async def _build_health_pvgis_calibration(self) -> dict[str, Any]:
         """Build calibration debug data for the health endpoint."""
         calibration = {
@@ -631,8 +892,16 @@ class ForecastEngine:
         site: SiteConfig,
         live_inputs: LiveInputs,
     ) -> float | None:
-        """Resolve dynamic clipping limit based on battery state and config."""
+        """Resolve dynamic clipping limit based on battery state and config.
+
+        When ``site.battery_capacity_kwh`` is configured the battery-aware
+        forecast simulation handles the dynamic clipping per hour, so the
+        legacy SoC-threshold rule is skipped here to avoid double-clipping.
+        """
         base_limit = site.effective_total_limit_watts()
+        if site.battery_capacity_kwh is not None:
+            return base_limit
+
         soc = live_inputs.battery_soc_percent
         full_threshold = self._config.engine.battery_full_soc_threshold
         full_limit = self._config.engine.limit_when_battery_full_watts

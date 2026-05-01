@@ -122,6 +122,7 @@ def load_config(path: str | Path) -> AppConfig:
             site_raw.get("battery_charge_limit_watts")
         ),
         system_total_limit_watts=_float_or_none(site_raw.get("system_total_limit_watts")),
+        battery_capacity_kwh=_float_or_none(site_raw.get("battery_capacity_kwh")),
     )
 
     ha_raw = raw.get("home_assistant", {})
