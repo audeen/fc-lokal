@@ -462,21 +462,17 @@ class ForecastEngine:
         site: SiteConfig,
         timezone: str,
     ) -> tuple[dict[datetime, float], dict[str, Any]]:
-        """Clip every hour to the inverter AC limit once the battery is full.
+        """Clip future hours to the inverter AC limit once the battery is full.
 
-        The simulation walks every day in the forecast horizon (including the
-        already-past hours of today) starting at midnight with an empty
-        battery (0 %). As long as the battery still has free capacity, the
-        full forecast value passes through. Once the battery would be full at
-        the start of an hour, the slot is clipped to
-        ``grid_output_limit_watts`` because no more PV energy can be absorbed
-        by DC charging.
+        For every future hourly slot we walk the predicted state of charge
+        forward. As long as the battery still has free capacity, the full
+        forecast value passes through. Once the battery would be full at the
+        start of an hour, the slot is clipped to ``grid_output_limit_watts``
+        (the inverter AC limit) because no more PV energy can be absorbed by
+        DC charging.
 
-        For today, when the live ``battery_soc_percent`` is known, the
-        simulated SoC is snapped to that value at the beginning of
-        ``current_hour``. That keeps the future-side prediction aligned with
-        reality while the past side stays deterministic and reproducible
-        across container restarts.
+        Today starts at the live ``battery_soc_percent``. Following days start
+        empty (0 %) since we do not model overnight house consumption.
         """
         debug: dict[str, Any] = {
             "active": False,
@@ -516,44 +512,39 @@ class ForecastEngine:
         today = now.date()
 
         capacity_wh = capacity_kwh * 1000.0
-        live_soc = (
-            max(0.0, min(100.0, live_inputs.battery_soc_percent))
-            if live_inputs.battery_soc_percent is not None
-            else None
-        )
 
-        # Group ALL timestamps by local day in chronological order (past + future).
+        # Starting SoC per local day.
+        starting_soc: dict[date, float] = {}
+        if live_inputs.battery_soc_percent is not None:
+            starting_soc[today] = max(
+                0.0, min(100.0, live_inputs.battery_soc_percent)
+            )
+        else:
+            # Without a live SoC the simulation cannot start today; bail out
+            # to keep behavior identical to the legacy path.
+            debug["reason"] = "battery_soc_unknown"
+            return timestamps_to_power, debug
+
+        # Group future timestamps by local day in chronological order.
         per_day_slots: dict[date, list[datetime]] = {}
         for timestamp in sorted(timestamps_to_power):
+            if timestamp < current_hour:
+                continue
             local_day = timestamp.astimezone(tz).date()
             per_day_slots.setdefault(local_day, []).append(timestamp)
 
         if not per_day_slots:
-            debug["reason"] = "no_slots"
+            debug["reason"] = "no_future_slots"
             return timestamps_to_power, debug
 
         result = dict(timestamps_to_power)
         debug["active"] = True
 
         for local_day in sorted(per_day_slots):
-            # Every day starts assumed-empty at midnight. Following days do
-            # not have a live SoC anchor, today's anchor is applied below at
-            # current_hour.
-            remaining_capacity_wh = capacity_wh
+            soc = starting_soc.get(local_day, 0.0)
+            remaining_capacity_wh = max(0.0, (100.0 - soc) / 100.0 * capacity_wh)
 
             for timestamp in per_day_slots[local_day]:
-                # Snap to the live SoC right before processing the current
-                # hour of today, so the future side of the curve is anchored
-                # to reality.
-                if (
-                    local_day == today
-                    and timestamp == current_hour
-                    and live_soc is not None
-                ):
-                    remaining_capacity_wh = max(
-                        0.0, (100.0 - live_soc) / 100.0 * capacity_wh
-                    )
-
                 pv_forecast_wh = result[timestamp]  # 1 h slots → W ≈ Wh per slot
                 ac_path_wh = min(pv_forecast_wh, ac_limit_watts)
                 excess_after_ac_wh = max(0.0, pv_forecast_wh - ac_path_wh)
@@ -570,7 +561,6 @@ class ForecastEngine:
                     if (
                         debug["first_full_hour"] is None
                         and local_day == today
-                        and timestamp >= current_hour
                         and remaining_capacity_wh <= 1e-6
                     ):
                         debug["first_full_hour"] = timestamp.isoformat()
@@ -579,7 +569,6 @@ class ForecastEngine:
                 if (
                     debug["first_full_hour"] is None
                     and local_day == today
-                    and timestamp >= current_hour
                     and remaining_capacity_wh <= 1e-6
                 ):
                     # Battery just hit 100 % — record the next hour boundary
@@ -597,15 +586,11 @@ class ForecastEngine:
     ) -> dict[datetime, float]:
         """Pin past forecast values so the HA energy chart history is stable.
 
-        We continuously update the cache for every future slot. Once a slot
-        crosses into the past, the cache already holds the last value the
-        battery simulation emitted while the slot was still future, so the
-        clipped prediction sticks instead of being overwritten by an
-        unclipped recompute (the battery simulation only walks future hours).
-
-        For past slots we always serve the cached value. If no cache exists
-        yet (cold start) we fall back to whatever the pipeline produced and
-        cache that as a best-effort value.
+        Once an hourly slot is in the past, subsequent forecast updates would
+        otherwise rewrite that slot with a freshly modeled value (Open-Meteo
+        hindcast + PVGIS calibration shift between calls). That makes the
+        already-shown history flicker. Instead, we remember the very first
+        value we emit for a given past timestamp and keep returning that.
         """
         if not timestamps_to_power:
             return timestamps_to_power
@@ -623,10 +608,14 @@ class ForecastEngine:
                     result[timestamp] = power
                 else:
                     result[timestamp] = cached
-            else:
-                # Future slot: remember the latest emitted value so it can be
-                # served verbatim once it becomes past.
+            elif timestamp == current_hour:
+                # Lock in the latest battery-simulated value for the current
+                # hour on every call. Once the slot transitions to the past,
+                # the most recent sim-clipped value stays — instead of being
+                # overwritten by an unclipped Open-Meteo hindcast.
                 self._frozen_history_watts[timestamp] = power
+                result[timestamp] = power
+            else:
                 result[timestamp] = power
 
         self._evict_old_frozen_history(now=now)
