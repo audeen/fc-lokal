@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from forecast_solar.models import Estimate
@@ -27,11 +27,21 @@ from .const import CONF_BASE_URL, DOMAIN
 from .coordinator import ForecastSolarDataUpdateCoordinator
 
 
+# Scope of the optional `forecast` extra-state-attribute exposed by some
+# sensors. The attribute holds an array of {"period_start": iso, "value": n}
+# dicts that custom Lovelace cards (e.g. statistics-graph-chart-card with
+# `data_attribute: forecast`) can render directly.
+FORECAST_SCOPE_TODAY_ENERGY = "today_energy"
+FORECAST_SCOPE_TOMORROW_ENERGY = "tomorrow_energy"
+FORECAST_SCOPE_FULL_POWER = "full_power"
+
+
 @dataclass(frozen=True)
 class ForecastSolarSensorEntityDescription(SensorEntityDescription):
     """Describes an FC Lokal sensor."""
 
     state: Callable[[Estimate], Any] | None = None
+    forecast_scope: str | None = None
 
 
 SENSORS: tuple[ForecastSolarSensorEntityDescription, ...] = (
@@ -43,6 +53,7 @@ SENSORS: tuple[ForecastSolarSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
         suggested_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=1,
+        forecast_scope=FORECAST_SCOPE_TODAY_ENERGY,
     ),
     ForecastSolarSensorEntityDescription(
         key="energy_production_today_remaining",
@@ -61,6 +72,7 @@ SENSORS: tuple[ForecastSolarSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
         suggested_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=1,
+        forecast_scope=FORECAST_SCOPE_TOMORROW_ENERGY,
     ),
     ForecastSolarSensorEntityDescription(
         key="power_highest_peak_time_today",
@@ -79,6 +91,7 @@ SENSORS: tuple[ForecastSolarSensorEntityDescription, ...] = (
         state=lambda estimate: estimate.power_production_now,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPower.WATT,
+        forecast_scope=FORECAST_SCOPE_FULL_POWER,
     ),
     ForecastSolarSensorEntityDescription(
         key="power_production_next_hour",
@@ -187,3 +200,59 @@ class ForecastSolarSensorEntity(
         else:
             state = self.entity_description.state(self.coordinator.data)
         return state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Expose the hourly forecast curve for selected sensors.
+
+        The attribute name (`forecast`) and item shape
+        (`{"period_start": iso, "value": number}`) follow the de-facto
+        Solcast convention so that custom Lovelace cards such as
+        statistics-graph-chart-card (`data_attribute: forecast`) and
+        apexcharts-card can render the future curve directly without
+        relying on the HA recorder history.
+        """
+        scope = self.entity_description.forecast_scope
+        if scope is None:
+            return None
+
+        estimate = self.coordinator.data
+        if estimate is None:
+            return None
+
+        if scope == FORECAST_SCOPE_FULL_POWER:
+            source = getattr(estimate, "watts", None)
+            unit = "W"
+        elif scope in (
+            FORECAST_SCOPE_TODAY_ENERGY,
+            FORECAST_SCOPE_TOMORROW_ENERGY,
+        ):
+            source = getattr(estimate, "wh_period", None)
+            unit = "Wh"
+        else:
+            return None
+
+        if not source:
+            return None
+
+        target_day: date | None = None
+        if scope == FORECAST_SCOPE_TODAY_ENERGY:
+            target_day = estimate.now().date()
+        elif scope == FORECAST_SCOPE_TOMORROW_ENERGY:
+            target_day = estimate.now().date() + timedelta(days=1)
+
+        forecast: list[dict[str, Any]] = []
+        for timestamp, value in sorted(source.items()):
+            if target_day is not None and timestamp.date() != target_day:
+                continue
+            forecast.append(
+                {
+                    "period_start": timestamp.isoformat(),
+                    "value": value,
+                }
+            )
+
+        if not forecast:
+            return None
+
+        return {"forecast": forecast, "forecast_unit": unit}
